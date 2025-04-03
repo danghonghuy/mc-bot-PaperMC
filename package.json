@@ -1,0 +1,20 @@
+{
+  "name": "bot-mc-bedrock",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.0",
+    "dotenv": "^16.4.7",
+    "minecraft-data": "^3.85.0",
+    "mineflayer": "^4.27.0",
+    "mineflayer-pathfinder": "^2.4.5"
+  }
+}
