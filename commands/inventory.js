@@ -157,18 +157,31 @@ async function giveItem(bot, username, message, aiModel) {
     // --- Bước 5: Di chuyển (nếu cần) và Ném đồ ---
     const distance = bot.entity.position.distanceTo(targetPlayer.position);
     console.log(`[Give Cmd] Bước 5: Khoảng cách tới ${targetPlayer.username}: ${distance.toFixed(2)} blocks.`);
-
+    
     try {
-        if (distance > GIVE_ITEM_MAX_DIST) {
-            bot.chat(`${username}, bạn đứng xa quá (${distance.toFixed(0)} blocks), lại gần đây (khoảng ${GIVE_ITEM_REACH_DIST}-${GIVE_ITEM_MAX_DIST} blocks) tôi đưa cho!`);
-            console.log(`[Give Cmd] Bước 5: Người chơi quá xa, yêu cầu lại gần.`);
-            // Tùy chọn: Có thể thêm logic pathfinder ở đây nếu muốn bot tự đi lại gần
-            // await bot.pathfinder.goto(new GoalNear(targetPlayer.position.x, targetPlayer.position.y, targetPlayer.position.z, GIVE_ITEM_REACH_DIST));
-            // console.log(`[Give Cmd] Bước 5: Đã đến gần ${targetPlayer.username}.`);
-            // Sau khi đến gần cần kiểm tra lại khoảng cách trước khi ném
-            // const newDistance = bot.entity.position.distanceTo(targetPlayer.position);
-            // if (newDistance > GIVE_ITEM_MAX_DIST) { ... xử lý lỗi ... }
-            return; // Dừng lại ở đây nếu dùng cách yêu cầu người chơi lại gần
+        if (distance > GIVE_ITEM_REACH_DIST + 1) { // Chỉ di chuyển nếu thực sự cần, cộng thêm 1 để có khoảng đệm
+             if (distance > 64) { // Giới hạn khoảng cách tối đa bot sẽ tự đi
+                 bot.chat(`${username}, bạn ở xa quá (> 64 blocks), tôi không đi được! Lại gần hơn đi.`);
+                 console.log(`[Give Cmd] Bước 5: Người chơi quá xa (> 64 blocks), hủy di chuyển.`);
+                 return;
+             }
+            bot.chat(`${username}, bạn đợi chút, tôi đi lại gần để đưa đồ...`);
+            console.log(`[Give Cmd] Bước 5: Người chơi hơi xa (${distance.toFixed(1)} blocks), bắt đầu di chuyển...`);
+            try {
+                await bot.pathfinder.goto(new GoalNear(targetPlayer.position.x, targetPlayer.position.y, targetPlayer.position.z, GIVE_ITEM_REACH_DIST));
+                console.log(`[Give Cmd] Bước 5: Đã đến gần ${targetPlayer.username}.`);
+                // Kiểm tra lại khoảng cách sau khi đến
+                const newDistance = bot.entity.position.distanceTo(targetPlayer.position);
+                if (newDistance > GIVE_ITEM_MAX_DIST + 1) { // Vẫn quá xa sau khi di chuyển?
+                    console.warn(`[Give Cmd] Bước 5: Đã di chuyển nhưng vẫn quá xa (${newDistance.toFixed(1)} blocks)? Có thể người chơi đã di chuyển.`);
+                    bot.chat(`${username}, hình như bạn di chuyển rồi, tôi không theo kịp!`);
+                    return;
+                }
+            } catch (pathError) {
+                 console.error("[Give Cmd] Bước 5: Lỗi khi di chuyển:", pathError);
+                 bot.chat(`Xin lỗi ${username}, tôi không tìm được đường đến chỗ bạn.`);
+                 return;
+            }
         }
 
         // Đủ gần, tiến hành ném

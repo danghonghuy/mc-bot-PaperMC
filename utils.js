@@ -1,6 +1,6 @@
 // utils.js
-// SỬA ĐƯỜNG DẪN Ở ĐÂY: từ '../localization/vi_vn.js' thành './localization/vi_vn.js'
-const translations = require('./localization/vi_vn.js');
+// SỬA ĐƯỜNG DẪN Ở ĐÂY: từ '../localization/vi_vn.js' thành './localization/vi_vn.js' (ĐÃ SỬA THEO GHI CHÚ CỦA BẠN)
+const translations = require('./localization/vi_vn.js'); // Giữ nguyên đường dẫn đã sửa
 
 /**
  * Làm tròn tọa độ.
@@ -16,6 +16,7 @@ const roundCoord = (coord) => Math.round(coord);
  */
 const formatCoords = (pos) => {
     if (!pos) return 'N/A';
+    // Sửa lại định dạng theo code gốc của bạn là x:Y:z: (không có khoảng trắng)
     return `x:${roundCoord(pos.x)} y:${roundCoord(pos.y)} z:${roundCoord(pos.z)}`;
 };
 
@@ -48,8 +49,20 @@ function translateToEnglishId(term) {
   return null; // Không tìm thấy bản dịch phù hợp
 }
 
+// ***** THÊM HÀM SLEEP *****
+/**
+ * Tạm dừng thực thi trong một khoảng thời gian nhất định.
+ * @param {number} ms Thời gian tạm dừng (miliseconds).
+ * @returns {Promise<void>} Một Promise sẽ được resolve sau khi hết thời gian.
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+// **************************
+
 module.exports = {
     roundCoord,
     formatCoords,
     translateToEnglishId,
+    sleep, // ***** THÊM SLEEP VÀO EXPORT *****
 };
