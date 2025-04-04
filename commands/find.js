@@ -3,7 +3,7 @@ const { GoalNear } = require("mineflayer-pathfinder").goals;
 const { Vec3 } = require("vec3");
 const { translateToEnglishId, formatCoords } = require("../utils");
 
-const MAX_FIND_DISTANCE = 128;
+const MAX_FIND_DISTANCE = 999;
 const GOTO_RANGE = 1;
 
 async function startFindingTask(bot, username, message, aiModel) {

@@ -1,5 +1,5 @@
 // --- START OF FILE commands/auto_defend.js ---
-const { goals: { GoalFollow, GoalBlock, GoalXZ, GoalNear } } = require('mineflayer-pathfinder');
+const { goals: { GoalFollow, GoalBlock, GoalXZ, GoalNear, GoalInvert } } = require('mineflayer-pathfinder'); // Thêm GoalInvert
 const { Vec3 } = require('vec3');
 
 // ***** ĐỊNH NGHĨA SLEEP NẾU KHÔNG CÓ TRONG UTILS *****
@@ -12,11 +12,11 @@ function sleep(ms) { // BẮT BUỘC PHẢI CÓ HÀM NÀY
 // --- Configuration ---
 const HOSTILE_SCAN_RADIUS = 16;
 const PLAYER_SCAN_RADIUS = 8;
-const VERY_CLOSE_THRESHOLD_SQ = 16; // Tăng nhẹ lên 4m*4m = 16
-const LIKELY_ATTACKER_RANGE_SQ = 64; // Tăng lên 8m*8m = 64
+const VERY_CLOSE_THRESHOLD_SQ = 16; // 4m*4m = 16
+const LIKELY_ATTACKER_RANGE_SQ = 64; // 8m*8m = 64
 const DEFEND_TIMEOUT = 20 * 1000;
-const FLEE_DISTANCE = 15;
-const SAFE_DISTANCE = 25;
+const FLEE_DISTANCE = 15; // Vẫn dùng cho chạy ngẫu nhiên
+const SAFE_DISTANCE = 25; // Khoảng cách an toàn mong muốn khi chạy trốn bằng GoalInvert
 const COMBAT_DISTANCE = 3.0;
 const FOLLOW_DISTANCE = 1.5;
 const LOOK_INTERVAL = 250;
@@ -35,6 +35,8 @@ let defendingTarget = null;
 let combatInterval = null;
 let lookInterval = null;
 let lastAttackTime = 0;
+let lastHurtProcessedTime = 0; // <<< THÊM: Thời gian xử lý sự kiện hurt cuối cùng
+const HURT_PROCESS_COOLDOWN = 2000; // <<< THÊM: Cooldown 2 giây cho xử lý hurt
 
 // --- Initialization ---
 function initializeAutoDefend(bot, stopTasksFunction) {
@@ -47,6 +49,7 @@ function initializeAutoDefend(bot, stopTasksFunction) {
     isDefending = false;
     defendingTarget = null;
     clearCombatIntervals();
+    lastHurtProcessedTime = 0; // Reset khi khởi tạo
 
     botInstance.removeListener('entityHurt', handleEntityHurt);
     botInstance.on('entityHurt', handleEntityHurt);
@@ -55,96 +58,96 @@ function initializeAutoDefend(bot, stopTasksFunction) {
 
 // Hàm xử lý khi bot bị tấn công
 function handleEntityHurt(entity) {
+    const now = Date.now();
     if (!botInstance || !botInstance.entity || entity.id !== botInstance.entity.id || isDefending || botInstance.isProtecting) {
-        return;
+        return; // Bỏ qua nếu không phải bot, đang phòng thủ, hoặc đang bảo vệ theo lệnh
     }
 
-    console.log("[Auto Defend] Á! Bị tấn công!");
-    try {
-        botInstance.chat("Á! Đau! Cắn trộm hả !!!!");
-    } catch (e) { console.error("[Auto Defend] Lỗi khi gửi tin nhắn chat bị đánh:", e); }
+    // <<< THÊM KIỂM TRA COOLDOWN >>>
+    if (now - lastHurtProcessedTime < HURT_PROCESS_COOLDOWN) {
+        // console.log("[Auto Defend Debug] Bỏ qua sự kiện hurt do đang trong cooldown xử lý."); // <<< BỎ LOG DEBUG
+        return;
+    }
+    // <<< KẾT THÚC KIỂM TRA COOLDOWN >>>
 
-    // --- Gộp Quét và Logic Xác Định (v3.2) ---
+
+
+    // --- Gộp Quét và Logic Xác Định (Giữ nguyên logic quét) ---
     let potentialAttacker = null;
     let closestHostileInRange = null;
     let closestPlayerInRange = null;
     let minHostileDistSq = HOSTILE_SCAN_RADIUS * HOSTILE_SCAN_RADIUS;
     let minPlayerDistSq = PLAYER_SCAN_RADIUS * PLAYER_SCAN_RADIUS;
     const botPos = botInstance.entity.position;
-    const VERY_CLOSE_THRESHOLD_SQ = 16; // 4m*4m
-    const LIKELY_ATTACKER_RANGE_SQ = 64; // 8m*8m
-    let foundEntitiesLog = []; // Mảng để log debug
+    // let foundEntitiesLog = []; // <<< BỎ LOG DEBUG
 
-    console.log(`[Auto Defend Debug] Quét thực thể: Hostiles <= ${HOSTILE_SCAN_RADIUS}m, Players <= ${PLAYER_SCAN_RADIUS}m`);
-    console.log("--- START NEARBY ENTITY SCAN & LOGIC ---");
+    // console.log(`[Auto Defend Debug] Quét thực thể: Hostiles <= ${HOSTILE_SCAN_RADIUS}m, Players <= ${PLAYER_SCAN_RADIUS}m`); // <<< BỎ LOG DEBUG
+    // console.log("--- START NEARBY ENTITY SCAN & LOGIC ---"); // <<< BỎ LOG DEBUG
 
     for (const entityId in botInstance.entities) {
         const E = botInstance.entities[entityId];
         if (E === botInstance.entity || !E.isValid) continue;
 
         const distSq = E.position.distanceSquared(botPos);
-        const dist = Math.sqrt(distSq).toFixed(1);
+        // const dist = Math.sqrt(distSq).toFixed(1); // <<< BỎ LOG DEBUG
 
-        // Log tất cả thực thể trong phạm vi quét lớn nhất (để debug)
-        if (distSq < HOSTILE_SCAN_RADIUS * HOSTILE_SCAN_RADIUS) {
-            const kindLower = E.kind ? E.kind.toLowerCase() : 'undefined'; // Chuẩn hóa và xử lý null/undefined
-            const entityLogInfo = `Found: ${E.name || E.type} | Kind: ${kindLower} | User: ${E.username} | Dist: ${dist}m | Pos: (${Math.floor(E.position.x)}, ${Math.floor(E.position.y)}, ${Math.floor(E.position.z)})`;
-            console.log(`[ENTITY SCAN] ${entityLogInfo}`);
-            foundEntitiesLog.push(entityLogInfo); // Lưu vào mảng log
-        }
+        // <<< BỎ LOG QUÉT CHI TIẾT >>>
+        // if (distSq < HOSTILE_SCAN_RADIUS * HOSTILE_SCAN_RADIUS) {
+        //     const kindLower = E.kind ? E.kind.toLowerCase() : 'undefined';
+        //     const entityLogInfo = `Found: ${E.name || E.type} | Kind: ${kindLower} | User: ${E.username} | Dist: ${dist}m | Pos: (${Math.floor(E.position.x)}, ${Math.floor(E.position.y)}, ${Math.floor(E.position.z)})`;
+        //     console.log(`[ENTITY SCAN] ${entityLogInfo}`);
+        //     foundEntitiesLog.push(entityLogInfo);
+        // }
 
-        // Áp dụng logic tìm kiếm ứng viên ngay trong vòng lặp này
-        // <<< SỬA LỖI KIỂM TRA KIND >>>
         const kindLower = E.kind ? E.kind.toLowerCase() : null;
-        const isHostile = kindLower === 'hostile mob' || kindLower === 'hostile mobs'; // Chuẩn hóa và kiểm tra cả 2
-        // <<< KẾT THÚC SỬA LỖI >>>
+        const isHostile = kindLower === 'hostile mob' || kindLower === 'hostile mobs';
         const isPlayer = E.type === 'player';
 
-        // Xét Mob thù địch
         if (isHostile && distSq < minHostileDistSq) {
             minHostileDistSq = distSq;
-            closestHostileInRange = E; // Gán giá trị
+            closestHostileInRange = E;
         }
-        // Xét Người chơi (chỉ trong phạm vi PLAYER_SCAN_RADIUS)
         else if (isPlayer && distSq < minPlayerDistSq) {
             minPlayerDistSq = distSq;
-            closestPlayerInRange = E; // Gán giá trị
+            closestPlayerInRange = E;
         }
     }
-    console.log(`--- END NEARBY ENTITY SCAN & LOGIC (${foundEntitiesLog.length} entities logged) ---`);
+    // console.log(`--- END NEARBY ENTITY SCAN & LOGIC (${foundEntitiesLog.length} entities logged) ---`); // <<< BỎ LOG DEBUG
 
-    // *** Logic Ưu Tiên Mới (v3.2 - Dựa trên biến đã gán trong vòng lặp) ***
+    // *** Logic Ưu Tiên (Giữ nguyên, chỉ bỏ log trùng) ***
     if (closestHostileInRange && minHostileDistSq < VERY_CLOSE_THRESHOLD_SQ) {
-        console.log(`[Auto Defend] Ưu tiên TUYỆT ĐỐI mob thù địch RẤT GẦN (<4m): ${closestHostileInRange.displayName}.`); // Sử dụng displayName
+        console.log(`[Auto Defend] Ưu tiên mob thù địch RẤT GẦN (<4m): ${closestHostileInRange.displayName}.`);
         potentialAttacker = closestHostileInRange;
     }
     else if (closestHostileInRange && minHostileDistSq < LIKELY_ATTACKER_RANGE_SQ) {
          console.log(`[Auto Defend] Ưu tiên mob thù địch ở gần (<8m): ${closestHostileInRange.displayName}.`);
          potentialAttacker = closestHostileInRange;
     }
-    else if (closestHostileInRange) { // Mob thù địch còn lại (xa hơn 8m)
+    else if (closestHostileInRange) {
         console.log(`[Auto Defend] Ưu tiên mob thù địch ở xa (>8m): ${closestHostileInRange.displayName}.`);
         potentialAttacker = closestHostileInRange;
     }
     else if (closestPlayerInRange) {
-        console.log(`[Auto Defend] Không có mob thù địch nào phù hợp, xét người chơi gần nhất: ${closestPlayerInRange.username}.`);
+        console.log(`[Auto Defend] Không có mob thù địch phù hợp, xét người chơi gần nhất: ${closestPlayerInRange.username}.`);
         potentialAttacker = closestPlayerInRange;
     }
-    // *** Kết thúc Logic Ưu Tiên Mới (v3.2) ***
 
-    // Phần còn lại của hàm giữ nguyên
+    // Phần còn lại của hàm
     if (potentialAttacker) {
-        const OWNER_USERNAME = ".XinhgaiLesbian";
+        const OWNER_USERNAME = ".XinhgaiLesbian"; // Thay bằng tên chủ nhân thực tế nếu cần
         if (potentialAttacker.type === 'player' && potentialAttacker.username === OWNER_USERNAME) {
             console.log("[Auto Defend] Kẻ tấn công tiềm năng là chủ nhân. Bỏ qua.");
-             try { botInstance.chat("Á! Chủ nhân đánh yêu hả?"); } catch(e){}
-            return;
+             
+            return; // Không làm gì cả
         }
         const finalDistSq = potentialAttacker.position.distanceSquared(botPos);
-        console.log(`[Auto Defend] Xác định kẻ tấn công tiềm năng: ${potentialAttacker.username || potentialAttacker.displayName} ở khoảng cách ${Math.sqrt(finalDistSq).toFixed(1)}`); // Dùng displayName cho mob
-        startDefending(potentialAttacker);
+
+        // <<< CẬP NHẬT THỜI GIAN XỬ LÝ >>>
+        lastHurtProcessedTime = now; // Ghi lại thời gian xử lý thành công sự kiện hurt này
+        // <<< KẾT THÚC CẬP NHẬT >>>
+
+        startDefending(potentialAttacker); // Bắt đầu phòng thủ
     } else {
-        console.log("[Auto Defend] Không xác định được kẻ tấn công nào phù hợp trong phạm vi quét.");
     }
 }
 
@@ -152,18 +155,23 @@ function handleEntityHurt(entity) {
 // --- Core Defend Logic ---
 function startDefending(attacker) {
     if (isDefending || !attacker || !attacker.isValid) {
-        console.log("[Auto Defend] Không thể bắt đầu phòng thủ (đã đang phòng thủ hoặc mục tiêu không hợp lệ).");
+        // console.log("[Auto Defend] Không thể bắt đầu phòng thủ (đã đang phòng thủ hoặc mục tiêu không hợp lệ)."); // Có thể bỏ nếu startDefending luôn được gọi sau kiểm tra hợp lệ
         return;
     }
 
     isDefending = true;
     defendingTarget = attacker;
-    botInstance.isDefending = true;
+    botInstance.isDefending = true; // Cập nhật trạng thái bot chính
 
-    console.log(`[Auto Defend] Bắt đầu phòng thủ chống lại ${attacker.username || attacker.name}!`);
+    console.log(`[Auto Defend] Bắt đầu phòng thủ chống lại ${attacker.username || attacker.displayName}!`); // Dùng displayName cho mob
 
     console.log("[Auto Defend] Dừng các nhiệm vụ khác...");
-    stopAllTasksFn(botInstance, 'Bị tấn công');
+    // Gọi hàm stopAllTasks đã được truyền vào khi khởi tạo
+    if (stopAllTasksFn) {
+        stopAllTasksFn(botInstance, 'Bị tấn công'); // Truyền bot instance và lý do
+    } else {
+        console.error("[Auto Defend] Lỗi: Hàm stopAllTasks không được cung cấp khi khởi tạo!");
+    }
 
     const bestWeapon = findBestWeapon();
 
@@ -172,7 +180,7 @@ function startDefending(attacker) {
         startCombatLoop(bestWeapon);
     } else {
         console.log("[Auto Defend] Không có vũ khí phù hợp. Chạy trốn!");
-        startFleeing(attacker);
+        startFleeing(attacker); // Truyền attacker vào hàm chạy trốn
     }
 }
 
@@ -182,42 +190,47 @@ function stopDefending(reason) {
 
     isDefending = false;
     defendingTarget = null;
-    botInstance.isDefending = false;
+    botInstance.isDefending = false; // Cập nhật trạng thái bot chính
     clearCombatIntervals();
 
-    botInstance.pathfinder.stop();
-    botInstance.clearControlStates();
-    console.log("[Auto Defend] Đã dừng mọi hành động phòng thủ.");
+    // Cố gắng dừng pathfinder một cách an toàn
+    try {
+        if (botInstance.pathfinder?.isMoving()) {
+            botInstance.pathfinder.stop();
+            // console.log("[Auto Defend] Đã dừng pathfinder khi kết thúc phòng thủ."); // Có thể bỏ nếu không cần thiết
+        }
+    } catch (e) {
+        console.error("[Auto Defend] Lỗi khi cố dừng pathfinder:", e.message); // Giữ lỗi
+    }
+    botInstance.clearControlStates(); // Dừng mọi di chuyển/hành động cơ bản
+    console.log("[Auto Defend] Đã dừng mọi hành động phòng thủ."); // Giữ xác nhận
 }
 
-// --- Combat Loop ---
+// --- Combat Loop (Giữ nguyên logic combat, giảm log) ---
 function startCombatLoop(weapon) {
     const startTime = Date.now();
     clearCombatIntervals();
 
     const equipWeapon = async () => {
         try {
-            // Chỉ equip nếu chưa cầm đúng vũ khí
             if (!botInstance.heldItem || botInstance.heldItem.type !== weapon.type) {
-                console.log(`[Auto Defend Debug] Equipping ${weapon.name}...`);
+                // console.log(`[Auto Defend Debug] Equipping ${weapon.name}...`); // <<< BỎ LOG DEBUG
                 await botInstance.equip(weapon, 'hand');
-                await sleep(100); // Chờ một chút sau khi equip
+                await sleep(100); // Giữ sleep nhỏ này
             }
             return true;
         } catch (err) {
-            console.error(`[Auto Defend] Lỗi equip vũ khí ${weapon.name}:`, err.message);
-            // Quan trọng: Dừng phòng thủ nếu equip lỗi
+            console.error(`[Auto Defend] Lỗi equip vũ khí ${weapon.name}:`, err.message); // Giữ lỗi
             stopDefending(`Lỗi equip vũ khí: ${err.message}`);
             return false;
         }
     };
 
-    // Equip lần đầu
-    if (!equipWeapon()) return; // Dừng ngay nếu equip lần đầu lỗi
+    if (!equipWeapon()) return;
 
     lookInterval = setInterval(() => {
         if (!isDefending || !defendingTarget || !defendingTarget.isValid) return;
-        botInstance.lookAt(defendingTarget.position.offset(0, defendingTarget.height * 0.8, 0), true).catch(() => {});
+        botInstance.lookAt(defendingTarget.position.offset(0, defendingTarget.height * 0.8, 0), true).catch(() => {}); // Không log lỗi lookAt thường xuyên
     }, LOOK_INTERVAL);
 
     combatInterval = setInterval(async () => {
@@ -238,42 +251,32 @@ function startCombatLoop(weapon) {
         // 1. Tấn công
         if (distance < COMBAT_DISTANCE && now - lastAttackTime > ATTACK_INTERVAL) {
             if (botInstance.heldItem?.type === weapon.type) {
-                 // ***** BỎ KIỂM TRA CANSEE TRƯỚC KHI ĐÁNH *****
-                 // Giờ chỉ cần đủ gần là đánh
-                 // if (botInstance.canSeeEntity(defendingTarget)) { // XÓA DÒNG NÀY
-                    botInstance.attack(defendingTarget, true); // Đánh trực tiếp
-                    lastAttackTime = now;
-                    console.log(`[Auto Defend] Tấn công ${defendingTarget.username || defendingTarget.displayName}!`); // Dùng displayName
-
-                    if ((defendingTarget.name === 'creeper') && distance < 2.8) { /* ... (né creeper) ... */ }
-                 // } else {
-                 //      console.log(`[Auto Defend Debug] Đủ gần nhưng không thấy mục tiêu để tấn công.`);
-                 // } // XÓA DÒNG NÀY
-                 // ***** KẾT THÚC BỎ KIỂM TRA *****
+                 botInstance.attack(defendingTarget, true);
+                 lastAttackTime = now;
+                 // console.log(`[Auto Defend] Tấn công ${defendingTarget.username || defendingTarget.displayName}!`); // <<< Có thể bỏ nếu quá spammy, nhưng cũng hữu ích
+                 // Quyết định giữ lại log tấn công này vì nó xác nhận hành động cốt lõi
             } else {
-                console.warn("[Auto Defend] Tay không cầm vũ khí dù đang combat. Thử equip lại...");
-                if (!await equipWeapon()) return; // Dừng nếu equip lại lỗi
+                console.warn("[Auto Defend] Tay không cầm vũ khí dù đang combat. Thử equip lại..."); // Giữ cảnh báo
+                if (!await equipWeapon()) return;
             }
         }
 
+        // 2. Di chuyển
         const currentGoal = botInstance.pathfinder.goal;
-        // Kiểm tra xem có đang di chuyển không VÀ mục tiêu của goal có phải là thực thể đang phòng thủ không
         const isMovingCorrectly = botInstance.pathfinder.isMoving() && currentGoal instanceof GoalFollow && currentGoal.entity === defendingTarget;
 
-        if (!isMovingCorrectly) { // Nếu chưa di chuyển đúng cách
-             if (distance >= COMBAT_DISTANCE && distance < FLEE_DISTANCE) { // Ngoài tầm đánh -> đuổi theo
-                console.log("[Auto Defend] Mục tiêu ngoài tầm đánh, đuổi theo...");
-                // ***** SỬA LẠI GOAL *****
-                const goal = new GoalFollow(defendingTarget, FOLLOW_DISTANCE); // Sử dụng lại GoalFollow
-                // ***********************
+        if (!isMovingCorrectly) {
+             if (distance >= COMBAT_DISTANCE && distance < SAFE_DISTANCE) { // Ngoài tầm đánh nhưng chưa quá xa -> đuổi theo
+                // console.log("[Auto Defend] Mục tiêu ngoài tầm đánh, đuổi theo..."); // <<< Có thể bỏ nếu quá spammy
+                const goal = new GoalFollow(defendingTarget, FOLLOW_DISTANCE);
                 botInstance.pathfinder.setGoal(goal, true); // true = dynamic goal
-             } else if (distance >= FLEE_DISTANCE) { // Quá xa -> bỏ cuộc
-                 console.log("[Auto Defend] Mục tiêu chạy quá xa.");
+             } else if (distance >= SAFE_DISTANCE) { // Quá xa -> bỏ cuộc
+                 console.log("[Auto Defend] Mục tiêu chạy quá xa."); // Giữ log này
                  stopDefending("Mục tiêu quá xa");
              } else { // Đang trong tầm đánh (< COMBAT_DISTANCE) -> dừng di chuyển (nếu đang di chuyển)
                  if(botInstance.pathfinder.isMoving()){
                      botInstance.pathfinder.stop();
-                     console.log("[Auto Defend Debug] Đã trong tầm đánh, dừng pathfinder.");
+                     // console.log("[Auto Defend Debug] Đã trong tầm đánh, dừng pathfinder."); // <<< BỎ LOG DEBUG
                  }
              }
         }
@@ -282,56 +285,79 @@ function startCombatLoop(weapon) {
 }
 
 
-// --- Fleeing Logic ---
+// --- Fleeing Logic (Cải tiến với GoalInvert, giảm log) ---
 async function startFleeing(attacker) {
-    clearCombatIntervals();
+    clearCombatIntervals(); // Dừng các interval nhìn/đánh nếu có
     let fleeGoal = null;
     const botPos = botInstance.entity.position;
 
-    console.log("[Auto Defend] Bắt đầu chạy trốn!");
+    console.log("[Auto Defend] Bắt đầu chạy trốn!"); // Giữ log
      try { botInstance.chat("Á á, chạy thôi!"); } catch(e){}
 
+    // Ưu tiên chạy về nhà nếu có và gần
     const homeWaypoint = botInstance.waypoints ? botInstance.waypoints['home'] : null;
     if (homeWaypoint && botPos.distanceTo(homeWaypoint) < 100) {
-        console.log(`[Auto Defend] Ưu tiên chạy về nhà tại ${formatCoords(homeWaypoint)}!`);
+        console.log(`[Auto Defend] Ưu tiên chạy về nhà tại ${formatCoords(homeWaypoint)}!`); // Giữ log
         fleeGoal = new GoalBlock(homeWaypoint.x, homeWaypoint.y, homeWaypoint.z);
-    } else {
-        let fleeDirection;
-        if (attacker && attacker.isValid) {
-            fleeDirection = botPos.minus(attacker.position).normalize();
-             console.log("[Auto Defend] Chạy ngược hướng kẻ tấn công.");
-        } else {
-            fleeDirection = new Vec3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
-             console.log("[Auto Defend] Chạy theo hướng ngẫu nhiên.");
-        }
+    }
+    // <<< SỬ DỤNG GOALINVERT ĐỂ CHẠY TRỐN KẺ TẤN CÔNG >>>
+    else if (attacker && attacker.isValid) {
+         console.log(`[Auto Defend] Chạy trốn bằng cách giữ khoảng cách ${SAFE_DISTANCE}m với ${attacker.username || attacker.displayName}.`); // Giữ log
+         fleeGoal = new GoalInvert(new GoalFollow(attacker, SAFE_DISTANCE));
+    }
+    // <<< KẾT THÚC SỬ DỤNG GOALINVERT >>>
+    else { // Trường hợp không xác định được attacker hoặc attacker không valid nữa (fallback)
+        console.log("[Auto Defend] Không rõ kẻ tấn công/mục tiêu không hợp lệ, chạy theo hướng ngẫu nhiên."); // Giữ log
+        let fleeDirection = new Vec3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
         if (fleeDirection.distanceTo(new Vec3(0,0,0)) < 0.1) fleeDirection = new Vec3(1, 0, 0);
         const fleeTargetPos = botPos.plus(fleeDirection.scaled(FLEE_DISTANCE));
-        console.log(`[Auto Defend] Mục tiêu chạy trốn tạm thời: ${formatCoords(fleeTargetPos)}`);
+        // console.log(`[Auto Defend] Mục tiêu chạy trốn ngẫu nhiên tạm thời: ${formatCoords(fleeTargetPos)}`); // <<< Có thể bỏ
         fleeGoal = new GoalNear(fleeTargetPos.x, fleeTargetPos.y, fleeTargetPos.z, 2);
     }
 
+    if (!fleeGoal) {
+         console.error("[Auto Defend] Không thể xác định mục tiêu chạy trốn."); // Giữ lỗi
+         stopDefending("Không thể xác định mục tiêu chạy trốn");
+         return;
+    }
+
     try {
-         // Sử dụng goto để chờ kết quả chạy trốn (thành công hoặc lỗi)
+         console.log("[Auto Defend] Bắt đầu di chuyển đến mục tiêu chạy trốn..."); // Giữ log
          await botInstance.pathfinder.goto(fleeGoal);
-         console.log("[Auto Defend] Đã đến điểm chạy trốn hoặc bị dừng/lỗi.");
-         // Kiểm tra lại khoảng cách sau khi đến nơi (nếu attacker còn valid)
-         if (attacker && attacker.isValid && attacker.position.distanceTo(botInstance.entity.position) < SAFE_DISTANCE) {
-             console.log("[Auto Defend] Kẻ tấn công vẫn còn quá gần!");
-              try { botInstance.chat("Vẫn chưa an toàn!"); } catch(e){}
-             // Có thể thử chạy tiếp hoặc dừng tùy logic
-             stopDefending("Hoàn thành chạy trốn nhưng chưa an toàn");
+         console.log("[Auto Defend] Đã hoàn thành lệnh di chuyển chạy trốn."); // Giữ log chung
+
+         // Kiểm tra lại khoảng cách sau khi goto hoàn thành (nếu attacker còn valid)
+         if (attacker && attacker.isValid) {
+             const finalDistance = attacker.position.distanceTo(botInstance.entity.position);
+             if (finalDistance < SAFE_DISTANCE - 5) {
+                 console.log(`[Auto Defend] Hoàn thành chạy trốn nhưng kẻ tấn công vẫn còn quá gần (${finalDistance.toFixed(1)}m < ${SAFE_DISTANCE}m)!`); // Giữ log
+                  try { botInstance.chat("Vẫn chưa an toàn!"); } catch(e){}
+                 stopDefending("Hoàn thành chạy trốn nhưng chưa đủ an toàn");
+             } else {
+                 console.log(`[Auto Defend] Hoàn thành chạy trốn và đã ở khoảng cách an toàn (${finalDistance.toFixed(1)}m).`); // Giữ log
+                  try { botInstance.chat("Phù, tạm an toàn rồi!"); } catch(e){}
+                 stopDefending("Hoàn thành chạy trốn và đã an toàn");
+             }
          } else {
-              try { botInstance.chat("Phù, tạm an toàn rồi!"); } catch(e){}
-             stopDefending("Hoàn thành chạy trốn và đã an toàn");
+             // Attacker không còn valid (có thể đã chết hoặc ra khỏi tầm nhìn)
+             console.log("[Auto Defend] Hoàn thành chạy trốn (kẻ tấn công không còn hợp lệ)."); // Giữ log
+              try { botInstance.chat("Phù, thoát rồi!"); } catch(e){}
+             stopDefending("Hoàn thành chạy trốn (mục tiêu không hợp lệ)");
          }
     } catch (err) {
-         console.error(`[Auto Defend] Lỗi khi chạy trốn: ${err.message}`);
-         stopDefending(`Lỗi khi chạy trốn: ${err.message}`);
+         console.error(`[Auto Defend] Lỗi trong quá trình thực thi goto khi chạy trốn: ${err.message}`); // Giữ lỗi
+         if (err.message.includes("Path was stopped")) {
+             console.warn("[Auto Defend] Lệnh chạy trốn bị dừng giữa chừng."); // Giữ cảnh báo
+             stopDefending("Lệnh chạy trốn bị dừng");
+         } else {
+              try { botInstance.chat("Ối, chạy không được!"); } catch(e){}
+             stopDefending(`Lỗi pathfinding khi chạy trốn: ${err.message}`);
+         }
     }
 }
 
 
-// --- Utility Functions ---
+// --- Utility Functions (Giữ nguyên, giảm log) ---
 function findBestWeapon() {
     let bestWeapon = null;
     let bestPriority = WEAPON_PRIORITY.length;
@@ -346,8 +372,8 @@ function findBestWeapon() {
             bestWeapon = item;
         }
     }
-     if(bestWeapon) console.log(`[Auto Defend Debug] Vũ khí tốt nhất tìm thấy: ${bestWeapon.name} (Priority Index: ${bestPriority})`);
-     else console.log("[Auto Defend Debug] Không tìm thấy vũ khí nào trong danh sách ưu tiên.");
+     // if(bestWeapon) console.log(`[Auto Defend Debug] Vũ khí tốt nhất tìm thấy: ${bestWeapon.name} (Priority Index: ${bestPriority})`); // <<< BỎ LOG DEBUG
+     // else console.log("[Auto Defend Debug] Không tìm thấy vũ khí nào trong danh sách ưu tiên."); // <<< BỎ LOG DEBUG
     return bestWeapon;
 }
 
@@ -365,6 +391,6 @@ function formatCoords(pos) {
 
 module.exports = {
     initializeAutoDefend,
-    stopDefending,
+    stopDefending, // Vẫn export hàm stop nếu cần gọi từ bên ngoài (ví dụ: lệnh 'dừng')
 };
 // --- END OF FILE commands/auto_defend.js ---
