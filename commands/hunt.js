@@ -13,7 +13,7 @@ const { equipBestGear } = require("./protect");
 let mcData = null; // Sẽ được khởi tạo khi cần lần đầu
 
 const HUNT_SEARCH_RADIUS = 1200;
-const HUNT_ATTACK_RANGE = 3.5;
+const HUNT_ATTACK_RANGE = 4.5;
 const CHECK_INTERVAL_MS = 500; // Giảm nhẹ interval để phản ứng nhanh hơn chút
 const FIND_RETRY_INTERVAL_MS = 3000; // Thời gian chờ khi không tìm thấy mob
 

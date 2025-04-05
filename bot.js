@@ -5,7 +5,9 @@ const mineflayer = require("mineflayer");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { pathfinder, Movements, goals } = require("mineflayer-pathfinder");
 const mcData = require("minecraft-data");
-const collectBlock = require('mineflayer-collectblock'); 
+const collectBlock = require("mineflayer-collectblock");
+const { Vec3 } = require("vec3"); // <<< THÊM Vec3 nếu chưa có (cần cho farm_wheat)
+
 // Import các module lệnh
 const cleanInventoryCommands = require("./commands/clean_inventory");
 const followCommands = require("./commands/follow");
@@ -17,7 +19,7 @@ const protectCommands = require("./commands/protect");
 const collectCommands = require("./commands/collect");
 const navigateCommands = require("./commands/navigate");
 const scanCommands = require("./commands/scan");
-const farmCommands = require("./commands/farm");
+const farmCommands = require("./commands/farm"); // <<< Đổi tên hoặc đảm bảo không trùng với farm_wheat
 const craftCommands = require("./commands/craft");
 const infoCommands = require("./commands/info");
 const sleepCommands = require("./commands/sleep");
@@ -29,10 +31,11 @@ const eventNotifierCommands = require("./event_notifier");
 const autoEatCommands = require("./auto_eat");
 const { flattenArea, stopFlatten } = require("./commands/flatten_area");
 const homeCommands = require("./commands/home");
-const homeBuilder = require('./commands/home.js'); 
+const homeBuilder = require("./commands/home.js");
 // ***** THÊM IMPORT MODULE MỚI *****
 const autoTorch = require("./commands/auto_torch"); // Import module tự đặt đuốc
 const autoDefend = require("./commands/auto_defend"); // Import module tự vệ
+const farmWheatCommands = require("./commands/farm_wheat"); // <<< THÊM FARM WHEAT
 // **********************************
 
 const { roundCoord, formatCoords, sleep } = require("./utils"); // Đảm bảo có sleep trong utils
@@ -50,7 +53,7 @@ if (!GEMINI_API_KEY) {
 }
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-const aiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+const aiModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
 console.log(`Đang kết nối tới ${SERVER_ADDRESS}:${SERVER_PORT}...`);
 console.log(`Tên bot: ${BOT_USERNAME}, Phiên bản: ${MINECRAFT_VERSION}`);
@@ -98,14 +101,15 @@ bot.isBuilding = false;
 bot.buildingTaskDetails = null;
 bot.waypoints = {};
 bot.autoEatInterval = null;
-bot.autoTorchInterval = null; // <<< THÊM TRẠNG THÁI CHO AUTO TORCH INTERVAL
+bot.autoTorchInterval = null;
 bot.stuckDetectionInterval = null;
 bot.badZones = {};
 bot.isDefending = false;
+bot.isFarmingWheat = false; // <<< THÊM TRẠNG THÁI FARM WHEAT
+bot.farmingTaskDetails = null; // <<< THÊM TRẠNG THÁI FARM WHEAT
 bot.chatHistory = [];
 const MAX_CHAT_HISTORY = 10;
 
-// --- Hàm Dừng Tất Cả Nhiệm Vụ ---
 // --- Hàm Dừng Tất Cả Nhiệm Vụ (Tối ưu) ---
 function stopAllTasks(botInstanceRef, usernameOrReason) {
   let stoppedSomething = false; // Cờ để theo dõi nếu có hành động nào thực sự bị dừng
@@ -123,9 +127,8 @@ function stopAllTasks(botInstanceRef, usernameOrReason) {
   }
 
   // --- ƯU TIÊN HÀNH ĐỘNG DỪNG CỐT LÕI ---
-  // Các lệnh này nên được gọi đầu tiên để cố gắng dừng hoạt động vật lý ngay lập tức.
   try {
-    botInstanceRef.clearControlStates(); // Dừng di chuyển/nhảy/đặt/dùng ngay lập tức
+    botInstanceRef.clearControlStates();
     console.log("[Stop All - Optimized] Cleared control states.");
   } catch (e) {
     console.error(
@@ -134,12 +137,9 @@ function stopAllTasks(botInstanceRef, usernameOrReason) {
     );
   }
   try {
-    // Chỉ dừng pathfinder nếu nó đang hoạt động
     if (botInstanceRef.pathfinder?.isMoving()) {
-      botInstanceRef.pathfinder.stop(); // Hủy bỏ mục tiêu di chuyển hiện tại
+      botInstanceRef.pathfinder.stop();
       console.log("[Stop All - Optimized] Explicitly stopped pathfinder.");
-    } else {
-      // console.log("[Stop All - Optimized] Pathfinder was not moving."); // Bỏ comment nếu muốn debug chi tiết
     }
   } catch (e) {
     console.error(
@@ -148,81 +148,64 @@ function stopAllTasks(botInstanceRef, usernameOrReason) {
     );
   }
   try {
-    // An toàn để gọi ngay cả khi không đào, sẽ không gây lỗi
     botInstanceRef.stopDigging();
-    // console.log("[Stop All - Optimized] Called stopDigging."); // Bỏ comment nếu muốn debug chi tiết
   } catch (e) {
-    /* Bỏ qua lỗi nếu không đang đào */
+    /* Ignore */
   }
   try {
-    // An toàn để gọi ngay cả khi không dùng item
     botInstanceRef.stopUsingItem();
-    // console.log("[Stop All - Optimized] Called stopUsingItem."); // Bỏ comment nếu muốn debug chi tiết
   } catch (e) {
-    /* Bỏ qua lỗi nếu không dùng item */
+    /* Ignore */
   }
   // ---------------------------------------
 
   // --- XỬ LÝ AUTO DEFEND ---
-  // Logic này được ưu tiên và có điều kiện riêng: chỉ dừng nếu lý do không phải là bị tấn công.
   let autoDefendHandled = false;
   if (botInstanceRef.isDefending) {
     if (reasonText !== "Bị tấn công") {
       if (autoDefend && typeof autoDefend.stopDefending === "function") {
-        console.log(
-          "[Stop All - Optimized] Stopping auto-defend task (reason not 'Bị tấn công')..."
-        );
-        autoDefend.stopDefending(reasonText); // Hàm này nên tự đặt isDefending = false
-        stoppedSomething = true; // Đã dừng một task quan trọng
+        console.log("[Stop All - Optimized] Stopping auto-defend task...");
+        autoDefend.stopDefending(reasonText);
+        stoppedSomething = true;
       } else {
         console.warn(
           "[Stop All - Optimized] autoDefend module/function not found! Manually resetting flag."
         );
-        botInstanceRef.isDefending = false; // Reset cờ thủ công
-        stoppedSomething = true; // Vẫn coi là đã dừng một task
+        botInstanceRef.isDefending = false;
+        stoppedSomething = true;
       }
-      autoDefendHandled = true; // Đã xử lý (dừng hoặc cố gắng dừng)
+      autoDefendHandled = true;
     } else {
       console.log(
-        "[Stop All - Optimized] Auto-defend active due to 'Bị tấn công', not stopping it via general stopAllTasks."
+        "[Stop All - Optimized] Auto-defend active due to 'Bị tấn công', not stopping it."
       );
-      // KHÔNG dừng autoDefend trong trường hợp này, nhưng vẫn đánh dấu là đã xử lý để logic chat biết
       autoDefendHandled = true;
     }
   }
 
   // --- DỪNG LOGIC CỤ THỂ CỦA TASK & ĐẶT LẠI CỜ ---
-  // Các hàm stop... được gọi DƯỚI ĐÂY nên tập trung vào việc đặt cờ is[Task]ing = false,
-  // xóa taskDetails, và dọn dẹp các timers/intervals *của riêng nhiệm vụ đó*.
-  // Chúng KHÔNG cần gọi lại các lệnh dừng cốt lõi nữa.
-
   if (botInstanceRef.isFlattening) {
     console.log("[Stop All - Optimized] Stopping flatten task logic...");
-    // Đảm bảo stopFlatten đặt botInstanceRef.isFlattening = false
     stopFlatten(botInstanceRef, reasonText);
     stoppedSomething = true;
   }
   if (botInstanceRef.isFinding) {
     console.log("[Stop All - Optimized] Stopping find task logic...");
-    // Đảm bảo stopFinding đặt botInstanceRef.isFinding = false
     findCommands.stopFinding(botInstanceRef, reasonText);
     stoppedSomething = true;
   }
   if (botInstanceRef.isFollowing) {
     console.log("[Stop All - Optimized] Stopping follow task logic...");
-    // Đảm bảo stopFollowing đặt botInstanceRef.isFollowing = false
     followCommands.stopFollowing(botInstanceRef, reasonText);
     stoppedSomething = true;
   }
   if (botInstanceRef.isProtecting) {
     console.log("[Stop All - Optimized] Stopping protect task logic...");
-    // Đảm bảo stopProtecting đặt botInstanceRef.isProtecting = false và xóa interval
     protectCommands.stopProtecting(botInstanceRef, reasonText);
     stoppedSomething = true;
   }
   if (botInstanceRef.isCollecting) {
     console.log("[Stop All - Optimized] Stopping collect task logic...");
-    // Đảm bảo stopCollecting đặt botInstanceRef.isCollecting = false
     collectCommands.stopCollecting(botInstanceRef, reasonText);
     stoppedSomething = true;
   }
@@ -230,30 +213,38 @@ function stopAllTasks(botInstanceRef, usernameOrReason) {
     console.log(
       "[Stop All - Optimized] Stopping clean inventory task logic..."
     );
-    // Đảm bảo stopCleaningInventory đặt botInstanceRef.isCleaningInventory = false
     cleanInventoryCommands.stopCleaningInventory(botInstanceRef, reasonText);
     stoppedSomething = true;
   }
   if (botInstanceRef.isStripMining) {
     console.log("[Stop All - Optimized] Stopping strip mine task logic...");
-    // Đảm bảo stopStripMining đặt botInstanceRef.isStripMining = false
     stripMineCommands.stopStripMining(botInstanceRef, reasonText);
     stoppedSomething = true;
   }
   if (botInstanceRef.isHunting) {
     console.log("[Stop All - Optimized] Stopping hunt task logic...");
-    // Đảm bảo stopHunting đặt botInstanceRef.isHunting = false
     huntCommands.stopHunting(botInstanceRef, reasonText);
     stoppedSomething = true;
   }
   if (botInstanceRef.isDepositing) {
     console.log("[Stop All - Optimized] Stopping deposit task logic...");
-    // Đảm bảo stopDepositTask đặt botInstanceRef.isDepositing = false
     depositCommands.stopDepositTask(botInstanceRef, reasonText);
     stoppedSomething = true;
   }
+  // <<< THÊM DỪNG FARM WHEAT >>>
+  if (botInstanceRef.isFarmingWheat) {
+    // <<< Dừng Farm Wheat
+    if (farmWheatCommands?.stopFarmingWheat) {
+      farmWheatCommands.stopFarmingWheat(reasonText);
+      stoppedSomething = true;
+    } else {
+      console.warn("farmWheatCommands.stopFarmingWheat not found!");
+      botInstanceRef.isFarmingWheat = false;
+      stoppedSomething = true;
+    }
+  }
+  // <<< KẾT THÚC DỪNG FARM WHEAT >>>
 
-  // --- Dừng các task không có hàm stop riêng (chỉ cần set cờ) ---
   if (botInstanceRef.isBuilding) {
     console.log(
       "[Stop All - Optimized] Stopping building task logic (setting flag)."
@@ -267,13 +258,12 @@ function stopAllTasks(botInstanceRef, usernameOrReason) {
   if (botInstanceRef.isSleeping) {
     console.log("[Stop All - Optimized] Waking up bot...");
     try {
-      botInstanceRef.wake(); // Sự kiện 'wake' sẽ tự động đặt isSleeping = false
-      stoppedSomething = true; // Coi như đã dừng task ngủ thành công (hoặc đang dừng)
+      botInstanceRef.wake();
+      stoppedSomething = true;
     } catch (e) {
       console.error("[Stop All - Optimized] Error waking up bot:", e.message);
-      // Nếu wake lỗi, vẫn nên reset cờ để đảm bảo trạng thái đúng
       botInstanceRef.isSleeping = false;
-      stoppedSomething = true; // Vẫn tính là đã dừng
+      stoppedSomething = true;
     }
   }
 
@@ -285,17 +275,20 @@ function stopAllTasks(botInstanceRef, usernameOrReason) {
     "Bị kick",
     "Mất kết nối",
     "Bị kẹt",
-    "Bị tấn công", // 'Bị tấn công' là lý do im lặng về mặt chat, dù task khác có thể dừng
+    "Bị tấn công",
+    "Hoàn thành",
+    "Hoàn thành thu hoạch",
+    "Hoàn thành xây ruộng", // Thêm lý do hoàn thành
+    "Thất bại",
+    "Vòng lặp kết thúc bất thường", // Thêm lý do thất bại/bất thường
   ];
   const userInitiatedStop =
     typeof usernameOrReason === "string" &&
     !silentReasons.includes(usernameOrReason) &&
     !usernameOrReason.startsWith("Lỗi");
 
-  // Chỉ gửi tin nhắn chat nếu bot vẫn còn trong game
   if (botInstanceRef.entity) {
     if (stoppedSomething && userInitiatedStop) {
-      // Trường hợp: Có task bị dừng VÀ là do người dùng yêu cầu (không phải lý do im lặng)
       console.log(
         `[Stop All - Optimized] Tasks stopped due to user: ${usernameOrReason}.`
       );
@@ -312,13 +305,12 @@ function stopAllTasks(botInstanceRef, usernameOrReason) {
       userInitiatedStop &&
       !botInstanceRef.isDefending
     ) {
-      // Trường hợp: KHÔNG có task nào bị dừng VÀ là do người dùng yêu cầu VÀ bot KHÔNG đang tự vệ (vì nếu đang tự vệ thì có thể autoDefend không bị dừng do lý do "Bị tấn công")
       console.log(
         `[Stop All - Optimized] No active task found to stop for user: ${usernameOrReason} (and not defending).`
       );
       try {
         botInstanceRef.chat(
-          `Tôi không đang làm gì để dừng cả, ${usernameOrReason}.`
+          `Tôi không đang làm gì hết á, ${usernameOrReason}.`
         );
       } catch (e) {
         console.error(
@@ -332,9 +324,8 @@ function stopAllTasks(botInstanceRef, usernameOrReason) {
       botInstanceRef.isDefending &&
       !autoDefendHandled
     ) {
-      // Trường hợp cạnh: Người dùng yêu cầu dừng, không có task nào khác dừng, bot đang phòng thủ, NHƯNG autoDefend không được xử lý (ví dụ: lỗi logic) -> Thông báo không làm gì
       console.log(
-        `[Stop All - Optimized] No other task stopped, auto-defend was active but not explicitly handled by stop request for user: ${usernameOrReason}.`
+        `[Stop All - Optimized] No other task stopped, auto-defend active but not handled for user: ${usernameOrReason}.`
       );
       try {
         botInstanceRef.chat(
@@ -346,12 +337,11 @@ function stopAllTasks(botInstanceRef, usernameOrReason) {
           e
         );
       }
-    } else if (stoppedSomething) {
-      // Trường hợp: Có task bị dừng nhưng là do hệ thống/sự kiện (hoặc lý do im lặng)
+    } else if (stoppedSomething && !userInitiatedStop) {
+      // Chỉ log nếu có task dừng và không phải do user
       console.log(
-        `[Stop All - Optimized] Tasks stopped due to system/event: ${reasonText}. (No chat message sent)`
+        `[Stop All - Optimized] Tasks stopped due to system/event: ${reasonText}. (No chat message sent for this reason)`
       );
-      // Không cần chat trong trường hợp này
     }
   } else {
     console.log(
@@ -398,16 +388,17 @@ bot.once("spawn", () => {
   if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval);
   bot.stuckDetectionInterval = null;
   if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval);
-  bot.autoTorchInterval = null; // <<< RESET AUTO TORCH INTERVAL
+  bot.autoTorchInterval = null;
   bot.badZones = {};
   bot.isDefending = false;
+  bot.isFarmingWheat = false; // <<< RESET FARM WHEAT
+  bot.farmingTaskDetails = null; // <<< RESET FARM WHEAT
 
   // --- Cấu hình Pathfinder & Movements ---
   try {
     const currentMcData = mcData(bot.version);
     if (!currentMcData)
       throw new Error("Không thể tải mcData cho phiên bản này!");
-
     if (bot.pathfinder) {
       bot.pathfinder.thinkTimeout = 10000;
       console.log(
@@ -415,7 +406,7 @@ bot.once("spawn", () => {
       );
     } else {
       console.warn(
-        "[Pathfinder Config] bot.pathfinder not available at spawn time for setting thinkTimeout."
+        "[Pathfinder Config] bot.pathfinder not available at spawn time."
       );
     }
 
@@ -436,7 +427,7 @@ bot.once("spawn", () => {
 
     if (!bot.defaultMove.blocksToPlace) {
       console.warn(
-        "[Movements Config] bot.defaultMove.blocksToPlace was not initialized. Creating a new Set."
+        "[Movements Config] blocksToPlace not initialized. Creating Set."
       );
       bot.defaultMove.blocksToPlace = new Set();
     }
@@ -509,9 +500,7 @@ bot.once("spawn", () => {
 
     if (bot.pathfinder) {
       bot.pathfinder.setMovements(bot.defaultMove);
-      console.log(
-        "[Pathfinder] Đã khởi tạo và thiết lập Movements (parkour: true, thinkTimeout: 10s, 1x1towers: false)."
-      );
+      console.log("[Pathfinder] Đã khởi tạo và thiết lập Movements.");
     } else {
       console.error("[Lỗi Khởi tạo Pathfinder] bot.pathfinder không tồn tại!");
     }
@@ -536,7 +525,7 @@ bot.once("spawn", () => {
           console.warn(
             `[Stuck Detector] Bot có vẻ bị kẹt tại ${formatCoords(
               currentPos
-            )}! Đang dừng nhiệm vụ hiện tại.`
+            )}! Đang dừng.`
           );
           try {
             bot.chat("Ối, hình như tôi bị kẹt rồi! Đang dừng lại.");
@@ -556,25 +545,24 @@ bot.once("spawn", () => {
       lastPosStuckCheck = null;
     }
   }, 500);
-  console.log(
-    `[System] Đã kích hoạt kiểm tra kẹt di chuyển (Threshold: ${STUCK_THRESHOLD}, Timeout: ${
-      STUCK_TIMEOUT_COUNT * 500
-    }ms).`
-  );
+  console.log(`[System] Đã kích hoạt kiểm tra kẹt di chuyển.`);
 
-  // --- Khởi tạo các module tự động ---
+  // --- Khởi tạo các module tự động và lệnh ---
+  // (Thứ tự quan trọng nếu có phụ thuộc, nhưng ở đây có vẻ không sao)
   eventNotifierCommands.initializeEventNotifier(bot);
   autoEatCommands.initializeAutoEat(bot);
   autoTorch.initializeAutoTorch(bot, aiModel);
   autoDefend.initializeAutoDefend(bot, stopAllTasks);
+  farmWheatCommands.initialize(bot); // <<< KHỞI TẠO FARM WHEAT
+  // Khởi tạo các module lệnh khác (nếu chúng có hàm initialize)
+  // cleanInventoryCommands.initialize(bot); // Ví dụ
+  // followCommands.initialize(bot); // Ví dụ
+  // ...
 
   // <<< BẮT ĐẦU INTERVAL TỰ ĐỘNG ĐẶT ĐUỐC >>>
-  if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval); // Xóa interval cũ nếu có
-
-  const AUTO_TORCH_INTERVAL_MS = 2500; // Kiểm tra mỗi 2.5 giây
-
+  if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval);
+  const AUTO_TORCH_INTERVAL_MS = 2500;
   bot.autoTorchInterval = setInterval(async () => {
-    // Chỉ chạy nếu bot tồn tại, không ngủ, không phòng thủ, và autoTorch không đang xử lý
     if (
       bot?.entity &&
       !bot.isSleeping &&
@@ -582,26 +570,20 @@ bot.once("spawn", () => {
       !autoTorch.isPlacingTorch
     ) {
       try {
-        // console.log("[Auto Torch Interval] Checking light levels..."); // Bỏ comment nếu muốn debug
-        await autoTorch.checkAndPlaceTorch(); // Gọi hàm kiểm tra và đặt đuốc
+        await autoTorch.checkAndPlaceTorch();
       } catch (error) {
-        console.error(
-          "[Auto Torch Interval] Lỗi khi tự động kiểm tra/đặt đuốc:",
-          error.message
-        );
+        console.error("[Auto Torch Interval] Lỗi:", error.message);
       }
     }
   }, AUTO_TORCH_INTERVAL_MS);
-  console.log(
-    `[System] Đã kích hoạt tự động kiểm tra và đặt đuốc (Interval: ${AUTO_TORCH_INTERVAL_MS}ms).`
-  );
+  console.log(`[System] Đã kích hoạt tự động kiểm tra và đặt đuốc.`);
   // <<< KẾT THÚC INTERVAL TỰ ĐỘNG ĐẶT ĐUỐC >>>
 
   // Chào hỏi
   setTimeout(() => {
     try {
       bot.chat(
-        `Bot AI (${bot.botInGameName}) đã kết nối! Hỏi gì đi nào? :D (Gõ 'bạn làm được gì?' để xem danh sách lệnh)`
+        `Bot AI (${bot.botInGameName}) đã kết nối! Hỏi gì đi nào? :D (Gõ 'bạn làm được gì?')`
       );
     } catch (e) {
       console.error("Error sending initial chat message:", e);
@@ -619,9 +601,6 @@ bot.once("spawn", () => {
   pathfinderEvents.forEach((eventName) => {
     bot.on(eventName, (...args) => {
       const reason = args[0]?.message || args[0] || eventName;
-     
-    
-
       const isPathError =
         eventName === "cannotFindPath" ||
         eventName === "goal_non_reachable" ||
@@ -629,78 +608,65 @@ bot.once("spawn", () => {
 
       if (isPathError) {
         console.error(`[Pathfinder Error Detected] Reason: ${reason}`);
-        // Xử lý lỗi cụ thể cho từng task
-        if (bot.isFinding && findCommands.handleFindPathError) {
+        // Xử lý lỗi pathfinding cho từng task nếu cần hàm riêng
+        if (bot.isFinding && findCommands.handleFindPathError)
           findCommands.handleFindPathError(bot, reason);
-        } else if (
+        else if (
           bot.isCleaningInventory &&
           cleanInventoryCommands.finishCleaningInventory
-        ) {
+        )
           cleanInventoryCommands.finishCleaningInventory(
             bot,
             false,
-            `Không thể đến nơi vứt đồ: ${reason}`
+            `Path error: ${reason}`
           );
-        } else if (bot.isDepositing && depositCommands.stopDepositTask) {
-          depositCommands.stopDepositTask(
-            bot,
-            `Lỗi di chuyển đến rương: ${reason}`
-          );
-        } else if (bot.isCollecting && bot.collectingTaskDetails) {
-          const targetPos = bot.collectingTaskDetails.currentTarget?.position;
-          const currentPos = bot.entity.position;
-          if (targetPos && targetPos.y > currentPos.y + 1.5) {
-            console.error(
-              `[Collect Path Error] Không thể đến khối ${
-                bot.collectingTaskDetails.itemNameVi
-              } ở trên cao (${formatCoords(
-                targetPos
-              )}). Lý do: ${reason}. Thử tìm khối khác.`
-            );
-            try {
-              bot.chat(
-                `Tôi không lên được chỗ khối ${bot.collectingTaskDetails.itemNameVi} đó, tìm khối khác vậy.`
-              );
-            } catch (e) {
-              console.error("Error sending collect path error chat:", e);
-            }
-            bot.collectingTaskDetails.currentTarget = null;
-            bot.collectingTaskDetails.status = "idle";
-          } else {
-            console.warn(
-              `[Collect Path Error] Lỗi di chuyển khi thu thập: ${reason}. Vòng lặp collect sẽ thử tìm khối khác.`
-            );
-            bot.collectingTaskDetails.currentTarget = null;
-            bot.collectingTaskDetails.status = "idle";
-          }
-        } else if (bot.isStripMining && stripMineCommands.stopStripMining) {
-          stripMineCommands.stopStripMining(
-            bot,
-            `Lỗi di chuyển khi đào hầm: ${reason}`
-          );
-        } else if (bot.isHunting && huntCommands.stopHunting) {
-          huntCommands.stopHunting(bot, `Lỗi di chuyển khi săn bắn: ${reason}`);
-        } else if (bot.isBuilding && homeCommands.handleBuildPathError) {
+        else if (bot.isDepositing && depositCommands.stopDepositTask)
+          depositCommands.stopDepositTask(bot, `Path error: ${reason}`);
+        else if (bot.isCollecting && bot.collectingTaskDetails) {
+          /* Logic xử lý lỗi collect */ bot.collectingTaskDetails.currentTarget =
+            null;
+          bot.collectingTaskDetails.status = "idle";
+          console.warn(`[Collect Path Error] ${reason}. Finding new target.`);
+        } else if (bot.isStripMining && stripMineCommands.stopStripMining)
+          stripMineCommands.stopStripMining(bot, `Path error: ${reason}`);
+        else if (bot.isHunting && huntCommands.stopHunting)
+          huntCommands.stopHunting(bot, `Path error: ${reason}`);
+        else if (bot.isBuilding && homeCommands.handleBuildPathError)
           homeCommands.handleBuildPathError(bot, reason);
-        } else if (bot.isFlattening) {
+        else if (bot.isFlattening) {
+          console.warn(`[Flatten Path Error] ${reason}. Stopping.`);
+          stopFlatten(bot, `Path error: ${reason}`);
+        }
+        // <<< XỬ LÝ LỖI PATHFINDING CHO FARM WHEAT (quan trọng) >>>
+        // Farm wheat tự xử lý lỗi di chuyển trong vòng lặp của nó,
+        // nhưng nếu pathfinder báo lỗi ở đây, có thể dừng task nếu đang di chuyển chính
+        else if (bot.isFarmingWheat && bot.pathfinder?.isMoving()) {
           console.warn(
-            `[Flatten Path Error] Lỗi di chuyển khi làm phẳng: ${reason}. Dừng làm phẳng.`
+            `[Farm Wheat Pathfinder Error] ${reason}. Stopping farm task.`
           );
-          stopFlatten(bot, `Lỗi di chuyển: ${reason}`);
-        } else if (bot.pathfinder?.isMoving() && !bot.isDefending) {
-          // Chỉ dừng nếu *không* đang tự vệ
+          if (
+            farmWheatCommands &&
+            typeof farmWheatCommands.stopFarmingWheat === "function"
+          ) {
+            farmWheatCommands.stopFarmingWheat(
+              `Lỗi di chuyển: ${reason}`,
+              true
+            ); // Dừng farm
+          }
+        }
+        // <<< KẾT THÚC XỬ LÝ LỖI FARM WHEAT >>>
+        else if (bot.pathfinder?.isMoving() && !bot.isDefending) {
           console.warn(
-            `[Pathfinder Error] Lỗi khi đang di chuyển tự do (không phòng thủ): ${reason}. Dừng di chuyển.`
+            `[Pathfinder Error] Lỗi khi di chuyển tự do: ${reason}. Dừng.`
           );
           stopAllTasks(bot, `Lỗi di chuyển: ${reason}`);
         } else if (bot.isDefending && isPathError) {
           console.warn(
-            `[Pathfinder Error] Lỗi di chuyển khi đang phòng thủ: ${reason}. (Auto Defend logic sẽ xử lý)`
+            `[Pathfinder Error] Lỗi di chuyển khi phòng thủ: ${reason}. (Auto Defend xử lý)`
           );
         }
       }
 
-      // Xử lý goal_reached cho task finding
       if (
         bot.isFinding &&
         eventName === "goal_reached" &&
@@ -713,7 +679,7 @@ bot.once("spawn", () => {
 
   // --- Các sự kiện Bot khác ---
   bot.on("sleep", () => {
-    console.log("[Event] Bot đã ngủ thành công.");
+    console.log("[Event] Bot đã ngủ.");
     bot.isSleeping = true;
     try {
       bot.chat("Khò khò... Zzzz");
@@ -731,7 +697,7 @@ bot.once("spawn", () => {
     stopAllTasks(bot, "Bot chết");
   });
   bot.on("health", () => {
-    /* Có thể log máu/đói */
+    /* Log máu/đói nếu cần */
   });
 });
 
@@ -767,7 +733,8 @@ bot.on("chat", async (username, message) => {
     bot.isCleaningInventory ||
     bot.isDepositing ||
     bot.isBuilding ||
-    bot.isFlattening;
+    bot.isFlattening ||
+    bot.isFarmingWheat; // <<< THÊM isFarmingWheat
   const stopKeywords = [
     "dừng",
     "stop",
@@ -783,9 +750,47 @@ bot.on("chat", async (username, message) => {
     stopKeywords.some((k) => lowerMessage.includes(k))
   ) {
     console.log(`[Manual Stop] User ${username} requested stop/wake.`);
-    stopAllTasks(bot, username);
+    stopAllTasks(bot, username); // stopAllTasks sẽ xử lý dừng farmWheat
     return;
   }
+
+  // --- Xử lý từ chối xin đồ cho Farm Wheat ---
+  const refuseKeywords = [
+    "không",
+    "ko",
+    "no",
+    "đéo",
+    "deo",
+    "k",
+    "kg",
+    "hong",
+    "đếch",
+  ]; // Thêm các từ khóa từ chối
+  // Truy cập farmingTaskDetails thông qua bot instance nếu cần thiết và an toàn
+  const farmDetails = bot.farmingTaskDetails; // Lấy tham chiếu cục bộ
+  if (
+    bot.isFarmingWheat &&
+    farmDetails?.stage === "begging" && // Dùng optional chaining cho an toàn
+    farmDetails?.beggingTarget === username &&
+    refuseKeywords.some((k) => lowerMessage.includes(k))
+  ) {
+    console.log(
+      `[Farm Wheat Refusal] User ${username} refused begging request.`
+    );
+    if (
+      farmWheatCommands &&
+      typeof farmWheatCommands.handleBeggingRefusal === "function"
+    ) {
+      farmWheatCommands.handleBeggingRefusal(username);
+    } else {
+      console.warn(
+        "Cannot call handleBeggingRefusal - function not found. Stopping farm manually."
+      );
+      stopAllTasks(bot, "Người dùng từ chối xin đồ");
+    }
+    return; // Đã xử lý, không cần phân loại AI nữa
+  }
+  // --- Kết thúc xử lý từ chối ---
 
   // --- Xử lý xác nhận cho lệnh Find ---
   if (
@@ -828,9 +833,9 @@ bot.on("chat", async (username, message) => {
       stopAllTasks(bot, username);
     } else {
       try {
-        bot.chat(`${username}, nói 'tiếp' để đi tiếp hoặc 'dừng' để hủy nhé.`);
+        bot.chat(`${username}, nói 'tiếp' hoặc 'dừng' nhé.`);
       } catch (e) {
-        console.error("Error sending find confirmation chat:", e);
+        console.error("Error sending find confirm chat:", e);
       }
     }
     return;
@@ -838,7 +843,7 @@ bot.on("chat", async (username, message) => {
 
   // --- Phân loại ý định và thực thi lệnh ---
   try {
-    const classificationPrompt = `**Nhiệm vụ:** Phân loại ý định chính trong tin nhắn của người chơi gửi cho bot Minecraft.\n\n**Ngữ cảnh:**\n*   Người gửi: "${username}"\n*   Người nhận (Bot): "${bot.botInGameName}"\n*   Tin nhắn gốc: "${trimmedMessage}"\n\n**Yêu cầu:**\nChọn MỘT loại ý định phù hợp NHẤT từ danh sách dưới đây cho tin nhắn trên.\n\n**Danh sách các loại ý định:**\n*   GET_BOT_COORDS: Hỏi tọa độ của bot.\n*   GET_ENTITY_COORDS: Hỏi tọa độ của thực thể khác.\n*   FOLLOW_PLAYER: Yêu cầu đi theo người chơi.\n*   FIND_BLOCK: Yêu cầu tìm kiếm block và mob \n*   CHECK_INVENTORY: Yêu cầu liệt kê túi đồ.\n*   GIVE_ITEM: Yêu cầu đưa đồ.\n*   PROTECT_PLAYER: Yêu cầu bảo vệ người chơi.\n*   COLLECT_BLOCK: Yêu cầu thu thập block.\n*   GOTO_COORDS: Yêu cầu đi đến tọa độ.\n*   SCAN_ORES: Yêu cầu quét quặng.\n*   SAVE_WAYPOINT: Yêu cầu lưu điểm.\n*   GOTO_WAYPOINT: Yêu cầu đi đến điểm đã lưu.\n*   FLATTEN_AREA: Yêu cầu làm phẳng khu vực.\n*   LIST_WAYPOINTS: Yêu cầu liệt kê điểm đã lưu.\n*   DELETE_WAYPOINT: Yêu cầu xóa điểm đã lưu.\n*   BREED_ANIMALS: Yêu cầu cho thú giao phối.\n*   CRAFT_ITEM: Yêu cầu chế tạo đồ.\n*   GO_TO_SLEEP: Yêu cầu đi ngủ.\n*   STRIP_MINE: Yêu cầu đào hầm.\n*   HUNT_MOB: Yêu cầu đi săn, đi giết mob (không phải tìm kiếm).\n*   BUILD_HOUSE: Yêu cầu xây nhà.\n*   CLEAN_INVENTORY: Yêu cầu dọn túi đồ.\n*   DEPOSIT_ITEMS: Yêu cầu cất đồ vào rương theo loại.\n*   EQUIP_ITEM: Yêu cầu trang bị/cầm đồ.\n*   LIST_CAPABILITIES: Hỏi khả năng/lệnh.\n*   STOP_TASK: Yêu cầu dừng việc đang làm.\n*   GENERAL_CHAT: Trò chuyện thông thường.\n*   IGNORE: Tin nhắn không rõ nghĩa/không liên quan.\n\n**Phân loại cho tin nhắn sau:**\n"${trimmedMessage}"\n\n**Loại ý định là:**`;
+    const classificationPrompt = `**Nhiệm vụ:** Phân loại ý định chính...\n\n**Danh sách các loại ý định:**\n*   GET_BOT_COORDS: Hỏi tọa độ bot.\n*   GET_ENTITY_COORDS: Hỏi tọa độ thực thể.\n*   FOLLOW_PLAYER: Đi theo người chơi.\n*   FIND_BLOCK: Tìm kiếm block/mob.\n*   CHECK_INVENTORY: Xem túi đồ.\n*   GIVE_ITEM: Đưa đồ.\n*   PROTECT_PLAYER: Bảo vệ người chơi.\n*   COLLECT_BLOCK: Thu thập block.\n*   GOTO_COORDS: Đi đến tọa độ.\n*   SCAN_ORES: Quét block/mob xung quanh.\n*   SAVE_WAYPOINT: Lưu điểm.\n*   GOTO_WAYPOINT: Đi đến điểm đã lưu.\n*   FLATTEN_AREA: Làm phẳng khu vực.\n*   LIST_WAYPOINTS: Liệt kê điểm.\n*   DELETE_WAYPOINT: Xóa điểm.\n*   BREED_ANIMALS: Cho thú giao phối.\n*   CRAFT_ITEM: Chế tạo đồ.\n*   GO_TO_SLEEP: Đi ngủ.\n*   STRIP_MINE: Đào hầm.\n*   HUNT_MOB: Săn mob.\n*   BUILD_HOUSE: Xây nhà.\n*   CLEAN_INVENTORY: Dọn túi đồ.\n*   DEPOSIT_ITEMS: Cất đồ vào rương.\n*   EQUIP_ITEM: Trang bị đồ.\n*   FARM_WHEAT: Thu hoạch/làm ruộng lúa mì. \n*   LIST_CAPABILITIES: Hỏi khả năng.\n*   STOP_TASK: Dừng việc đang làm.\n*   GENERAL_CHAT: Trò chuyện.\n*   IGNORE: Bỏ qua.\n\n**Phân loại cho tin nhắn sau:**\n"${trimmedMessage}"\n\n**Loại ý định là:**`; // <<< ĐÃ THÊM FARM_WHEAT
 
     console.log(`[AI Intent] Gửi prompt phân loại...`);
     const intentResult = await aiModel.generateContent(classificationPrompt);
@@ -847,7 +852,7 @@ bot.on("chat", async (username, message) => {
       .toUpperCase()
       .replace(/[^A-Z_]/g, "");
     console.log(
-      `[AI Intent] Phân loại: "${intentClassification}" (Tin nhắn gốc: "${trimmedMessage}")`
+      `[AI Intent] Phân loại: "${intentClassification}" (Msg: "${trimmedMessage}")`
     );
 
     // --- Kiểm tra nếu bot đang bận ---
@@ -887,16 +892,18 @@ bot.on("chat", async (username, message) => {
         ? "xây nhà"
         : bot.isFlattening
         ? "làm phẳng"
-        : "làm việc khác";
+        : bot.isFarmingWheat
+        ? "làm ruộng"
+        : "làm việc khác"; // <<< THÊM isFarmingWheat
       try {
         bot.chat(
-          `${username}, tôi đang bận ${reason} rồi! Nói 'dừng' nếu muốn tôi hủy việc đang làm.`
+          `${username}, tôi đang bận ${reason} rồi! Nói 'dừng' nếu muốn tôi hủy.`
         );
       } catch (e) {
         console.error("Error sending busy chat:", e);
       }
       console.log(
-        `[Action Blocked] Intent ${intentClassification} blocked because bot is busy (${reason}).`
+        `[Action Blocked] Intent ${intentClassification} blocked (busy: ${reason}).`
       );
       return;
     }
@@ -914,17 +921,16 @@ bot.on("chat", async (username, message) => {
           aiModel
         );
         break;
-        case "BUILD_HOUSE":
-          bot.isBuilding = true;
-          try {
-            // Bây giờ homeBuilder đã được định nghĩa và có thể gọi hàm
-            await homeBuilder.startDefaultHouseBuild(bot, username);
-          } catch (buildError) {
-             console.error("Lỗi xảy ra khi gọi hàm xây nhà:", buildError);
-             bot.chat(`Rất tiếc ${username}, đã có lỗi khi bắt đầu xây nhà: ${buildError.message}`);
-             bot.isBuilding = false; // Reset trạng thái nếu có lỗi
-          }
-          break;
+      case "BUILD_HOUSE":
+        bot.isBuilding = true;
+        try {
+          await homeBuilder.startDefaultHouseBuild(bot, username);
+        } catch (buildError) {
+          console.error("Lỗi gọi hàm xây nhà:", buildError);
+          bot.chat(`Lỗi khi bắt đầu xây nhà: ${buildError.message}`);
+          bot.isBuilding = false;
+        }
+        break;
       case "FOLLOW_PLAYER":
         followCommands.startFollowing(bot, username);
         break;
@@ -953,14 +959,11 @@ bot.on("chat", async (username, message) => {
       case "PROTECT_PLAYER":
         await protectCommands.startProtecting(bot, username);
         break;
-      case "COLLECT_BLOCK":
-        await collectCommands.startCollectingTask(
-          bot,
-          username,
-          trimmedMessage,
-          aiModel
-        );
-        break;
+        case "COLLECT_BLOCK":
+          console.log('>>> DEBUG: typeof bot.findEntities in bot.js (before calling startCollectingTask):', typeof bot.findEntities);
+          // Gọi hàm thông qua đối tượng collectCommands đã import
+          await collectCommands.startCollectingTask(bot, username, message, aiModel);
+          break;
       case "GOTO_COORDS":
         await navigateCommands.goToCoordinates(
           bot,
@@ -1001,7 +1004,7 @@ bot.on("chat", async (username, message) => {
         break;
       case "BREED_ANIMALS":
         await farmCommands.breedAnimals(bot, username, trimmedMessage, aiModel);
-        break;
+        break; // Đảm bảo farmCommands là module đúng
       case "CRAFT_ITEM":
         await craftCommands.craftItem(bot, username, trimmedMessage, aiModel);
         break;
@@ -1015,7 +1018,7 @@ bot.on("chat", async (username, message) => {
           trimmedMessage,
           aiModel
         );
-        break; // Không cần gọi autoTorch ở đây nữa
+        break;
       case "HUNT_MOB":
         await huntCommands.startHuntingTask(
           bot,
@@ -1043,23 +1046,48 @@ bot.on("chat", async (username, message) => {
           aiModel
         );
         break;
+      // <<< THÊM CASE FARM_WHEAT >>>
+      case "FARM_WHEAT":
+        const radiusMatch = trimmedMessage.match(
+          /(\d+)\s*(khối|block|ô|radius|bk)/i
+        );
+        const farmRadius = radiusMatch ? parseInt(radiusMatch[1], 10) : 50; // Mặc định 50 nếu không nói
+        if (
+          farmWheatCommands &&
+          typeof farmWheatCommands.startFarmingWheat === "function"
+        ) {
+          await farmWheatCommands.startFarmingWheat(username, farmRadius);
+        } else {
+          console.error(
+            "[Farm Wheat] Lỗi: Không tìm thấy hàm startFarmingWheat."
+          );
+          bot.chat("Lỗi rồi, tôi không tìm thấy chức năng làm ruộng.");
+        }
+        break;
+      // <<< KẾT THÚC CASE FARM_WHEAT >>>
       case "LIST_CAPABILITIES":
         infoCommands.listCapabilities(bot, username);
         break;
       case "STOP_TASK":
-        console.log(
-          `[Action] Intent STOP_TASK recognized. Initiating stop via AI fallback for ${username}.`
-        ); // Log rõ hơn
-        stopAllTasks(bot, username); // <<< THÊM LỆNH GỌI DỪNG Ở ĐÂY
-        break; // Kết thúc case      case "GENERAL_CHAT": await chatCommands.handleGeneralChat( bot, username, trimmedMessage, aiModel ); break;
+        console.log(`[Action] Intent STOP_TASK recognized for ${username}.`);
+        stopAllTasks(bot, username);
+        break;
+      case "GENERAL_CHAT":
+        await chatCommands.handleGeneralChat(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel
+        );
+        break;
       case "IGNORE":
         console.log(
-          `[Action] Bỏ qua tin nhắn từ ${username} theo phân loại AI.`
+          `[Action] Bỏ qua tin nhắn từ ${username} (AI Classification).`
         );
         break;
       default:
         console.warn(
-          `[Action] Không rõ ý định từ AI: "${intentClassification}". Fallback sang General Chat.`
+          `[Action] Unknown AI intent: "${intentClassification}". Fallback to General Chat.`
         );
         await chatCommands.handleGeneralChat(
           bot,
@@ -1071,10 +1099,14 @@ bot.on("chat", async (username, message) => {
     }
   } catch (error) {
     console.error("[AI/Chat Processing] Lỗi nghiêm trọng:", error);
-    bot.isBuilding = false;
-    bot.isFinding = false;
-    bot.isFlattening = false;
-    bot.isDefending = false;
+    // Đảm bảo dừng các task khi có lỗi lớn
+    if (bot.isBuilding) bot.isBuilding = false;
+    if (bot.isFinding) findCommands.stopFinding(bot, "Lỗi hệ thống");
+    if (bot.isFlattening) stopFlatten(bot, "Lỗi hệ thống");
+    if (bot.isDefending) autoDefend.stopDefending("Lỗi hệ thống");
+    if (bot.isFarmingWheat)
+      farmWheatCommands.stopFarmingWheat("Lỗi hệ thống", true); // <<< DỪNG FARM KHI LỖI
+    // Cân nhắc gọi stopAllTasks ở đây để chắc chắn
     stopAllTasks(bot, "Lỗi hệ thống");
     try {
       bot.chat(
@@ -1088,7 +1120,10 @@ bot.on("chat", async (username, message) => {
 
 // --- Xử lý Lỗi và Kết thúc ---
 bot.on("error", (err) => {
-  console.error("!!! LỖI BOT:", err);
+  console.error(
+    "!!! LỖI BOT:",
+    err
+  ); /* Có thể dừng task ở đây nếu lỗi nghiêm trọng? */
 });
 bot.on("kicked", (reason) => {
   console.error("--- Bot bị kick ---");
@@ -1105,13 +1140,15 @@ bot.on("end", (reason) => {
   console.log("--- Kết nối bot kết thúc ---");
   console.log("Lý do:", reason);
   if (bot.autoEatInterval) clearInterval(bot.autoEatInterval);
-  if (bot.protectionInterval) clearInterval(bot.protectionInterval);
-  if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval);
-  if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval); // <<< DỌN DẸP AUTO TORCH
   bot.autoEatInterval = null;
+  if (bot.protectionInterval) clearInterval(bot.protectionInterval);
   bot.protectionInterval = null;
+  if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval);
   bot.stuckDetectionInterval = null;
-  bot.autoTorchInterval = null; // <<< DỌN DẸP AUTO TORCH
+  if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval);
+  bot.autoTorchInterval = null;
+  // Dọn dẹp các task đang chạy nếu cần (stopAllTasks nên làm việc này)
+  // stopAllTasks(bot, "Ngắt kết nối"); // Gọi lại ở đây có thể thừa nhưng chắc chắn
   console.log("Đã dọn dẹp interval timers.");
 });
 
@@ -1134,18 +1171,17 @@ bot.on("messagestr", (message, messagePosition, jsonMsg) => {
 // --- Xử lý Ctrl+C ---
 process.on("SIGINT", () => {
   console.log("\nĐang ngắt kết nối bot (Ctrl+C)...");
-
   if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval);
-  if (bot.autoEatInterval) clearInterval(bot.autoEatInterval);
-  if (bot.protectionInterval) clearInterval(bot.protectionInterval);
-  if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval); // <<< DỌN DẸP AUTO TORCH
   bot.stuckDetectionInterval = null;
+  if (bot.autoEatInterval) clearInterval(bot.autoEatInterval);
   bot.autoEatInterval = null;
+  if (bot.protectionInterval) clearInterval(bot.protectionInterval);
   bot.protectionInterval = null;
-  bot.autoTorchInterval = null; // <<< DỌN DẸP AUTO TORCH
+  if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval);
+  bot.autoTorchInterval = null;
   console.log("[SIGINT] Cleared interval timers.");
 
-  stopAllTasks(bot, "Tắt server");
+  stopAllTasks(bot, "Tắt server"); // Dừng tất cả task trước khi thoát
 
   const quitMessage = `Bot AI (${
     bot.botInGameName || BOT_USERNAME

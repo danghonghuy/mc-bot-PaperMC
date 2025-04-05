@@ -3,14 +3,14 @@ const { GoalBlock, GoalXZ, GoalNear } = require("mineflayer-pathfinder").goals; 
 const { Vec3 } = require("vec3");
 const { formatCoords, translateToEnglishId } = require("../utils");
 
-const DEFAULT_Y_LEVEL = -58;
+const DEFAULT_Y_LEVEL = -50;
 const TUNNEL_LENGTH = 64;
 const TUNNEL_HEIGHT = 2; // Chiều cao hầm (đào 2 block)
 const TUNNEL_WIDTH = 1; // Chiều rộng hầm (đào 1 block)
 const TORCH_INTERVAL = 10; // Đặt đuốc sau mỗi X block đào *ngang*
 const CHECK_INTERVAL_MS = 200; // Thời gian nghỉ giữa các bước đào ngang
 const TOOL_CHECK_INTERVAL_BLOCKS = 15; // Kiểm tra tool sau mỗi X block đào (ngang+dọc)
-const MAX_STAIRCASE_ATTEMPTS_PER_LEVEL = 5; // Giới hạn số lần thử cho mỗi bậc thang
+const MAX_STAIRCASE_ATTEMPTS_PER_LEVEL = 2; // Giới hạn số lần thử cho mỗi bậc thang
 const STAIRCASE_DIRECTION = new Vec3(0, 0, 1); // Hướng đào cầu thang (+Z = South)
 
 // --- Hàm tiện ích: equipBestPickaxe ---
@@ -234,7 +234,7 @@ async function digStaircaseToY(bot, targetY, task) {
     // Đảm bảo bot nhìn về hướng đào cầu thang
     await bot.lookAt(bot.entity.position.plus(STAIRCASE_DIRECTION), true);
 
-    while (currentY !== targetY) {
+    while (currentY !== targetY && bot.isStripMining) {
         const startPos = bot.entity.position.floored();
         console.log(`[Strip Mine Staircase] Đang ở Y=${currentY}. Cần đào ${dirString}. Hướng: ${formatCoords(STAIRCASE_DIRECTION)}`);
 
@@ -441,12 +441,12 @@ async function startStripMiningTask(bot, username, message, aiModel) {
 
     // Kiểm tra trang bị ban đầu
     if (!await equipBestPickaxe(bot)) {
-        bot.chat(`Xin lỗi ${username}, tôi không có cuốc để đào hầm.`);
+        // bot.chat(`Xin lỗi ${username}, tôi không có cuốc để đào hầm.`);
         return;
     }
     const mcData = require('minecraft-data')(bot.version);
     if (!bot.inventory.findInventoryItem(mcData.itemsByName.torch.id, null)) {
-         bot.chat(`Xin lỗi ${username}, tôi không có đuốc để thắp sáng hầm.`);
+        //  bot.chat(`Xin lỗi ${username}, tôi không có đuốc để thắp sáng hầm.`);
          return;
     }
 
@@ -479,7 +479,7 @@ async function startStripMiningTask(bot, username, message, aiModel) {
 
         } catch (err) {
             console.error("[Strip Mine] Lỗi khi đào cầu thang đến Y mục tiêu:", err.message);
-            bot.chat(`Xin lỗi ${username}, tôi gặp lỗi khi đào cầu thang: ${err.message}`);
+            // bot.chat(`Xin lỗi ${username}, tôi gặp lỗi khi đào cầu thang: ${err.message}`);
             finishStripMining(bot, false, `Lỗi khi đào cầu thang: ${err.message}`); // Dọn dẹp task
             return;
         }

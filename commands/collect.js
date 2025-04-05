@@ -5,16 +5,16 @@ const { Vec3 } = require("vec3");
 const { Movements } = require("mineflayer-pathfinder");
 const { translateToEnglishId, formatCoords } = require("../utils");
 
-const MAX_COLLECT_FIND_DISTANCE = 64;
+const MAX_COLLECT_FIND_DISTANCE = 640;
 const NEARBY_BLOCK_FIND_RADIUS = 10;
-const REACH_BLOCK_DIST = 4.1; // Tăng thêm chút nữa, quan trọng khi đứng dưới đào lên
-const REACH_TREE_BASE_DIST = 2.5;
-const MAX_VERTICAL_REACH = 4; // Giữ nguyên 4 block chiều cao
+const REACH_BLOCK_DIST = 8; // Tăng thêm chút nữa, quan trọng khi đứng dưới đào lên
+const REACH_TREE_BASE_DIST = 1;
+const MAX_VERTICAL_REACH = 8; // Giữ nguyên 4 block chiều cao
 const CHECK_INTERVAL = 500;
 const SHORT_CHECK_INTERVAL = 100;
 const VERY_SHORT_CHECK_INTERVAL = 50;
-const ITEM_PICKUP_WAIT_TICKS = 15;
-const ITEM_PICKUP_MAX_ATTEMPTS = 10;
+const ITEM_PICKUP_WAIT_TICKS = 10;
+const ITEM_PICKUP_MAX_ATTEMPTS = 5;
 const LEAF_CLEAR_RADIUS = 2;
 const MAX_PATHFINDER_ERRORS = 3; // Số lần lỗi pathfinder liên tiếp tối đa cho 1 mục tiêu
 
@@ -44,7 +44,7 @@ const leafNames = [
   "shroomlight",
   "azalea_leaves",
   "flowering_azalea_leaves",
-    "cherry_leaves"
+  "cherry_leaves",
 ];
 const scaffoldBlockNames = [
   "dirt",
@@ -64,15 +64,32 @@ function isShears(itemName) {
   return itemName === "shears";
 }
 function countItemManually(inventory, targetItemId) {
+  // Sửa lỗi undefined: trả về 0 nếu không có item hoặc lỗi
   if (targetItemId === null || targetItemId === undefined) return 0;
-  return inventory.count(targetItemId);
+  try {
+    return inventory.count(targetItemId) ?? 0;
+  } catch (e) {
+    console.warn(
+      `[countItemManually] Error counting item ID ${targetItemId}:`,
+      e.message
+    );
+    return 0;
+  }
 }
 
 // =============================================================================
 // SỬA LẠI EQUIPBESTTOOL ĐỂ ƯU TIÊN ĐÚNG LOẠI TOOL
 // =============================================================================
-async function equipBestTool(bot, toolType /* ví dụ: 'axe', 'pickaxe', 'shovel', 'shears' */, allowDowngrade = false) {
-  console.debug(`[Collect Equip] Yêu cầu tool loại '${toolType}'${allowDowngrade ? ' (cho phép cấp thấp)' : ''}`);
+async function equipBestTool(
+  bot,
+  toolType /* ví dụ: 'axe', 'pickaxe', 'shovel', 'shears' */,
+  allowDowngrade = false
+) {
+  console.debug(
+    `[Collect Equip] Yêu cầu tool loại '${toolType}'${
+      allowDowngrade ? " (cho phép cấp thấp)" : ""
+    }`
+  );
   const mcData = require("minecraft-data")(bot.version);
 
   let bestToolFound = null;
@@ -84,88 +101,105 @@ async function equipBestTool(bot, toolType /* ví dụ: 'axe', 'pickaxe', 'shove
 
   // 1. Xác định loại và tier của tool đang cầm
   if (currentTool) {
-      if (toolType === 'shears') {
-          currentToolIsCorrectType = isShears(currentTool.name);
-          // Shears không có tier, coi như tier đặc biệt (ví dụ: 99) để ưu tiên nếu yêu cầu shears
-          currentTier = currentToolIsCorrectType ? 99 : -1;
-      } else {
-          currentToolIsCorrectType = isToolOfType(currentTool.name, toolType);
-          if (currentToolIsCorrectType) {
-               const material = currentTool.name.split("_")[0];
-               currentTier = toolMaterialTier[material] || 0;
-          }
+    if (toolType === "shears") {
+      currentToolIsCorrectType = isShears(currentTool.name);
+      // Shears không có tier, coi như tier đặc biệt (ví dụ: 99) để ưu tiên nếu yêu cầu shears
+      currentTier = currentToolIsCorrectType ? 99 : -1;
+    } else {
+      currentToolIsCorrectType = isToolOfType(currentTool.name, toolType);
+      if (currentToolIsCorrectType) {
+        const material = currentTool.name.split("_")[0];
+        currentTier = toolMaterialTier[material] || 0;
       }
-      console.debug(`[Collect Equip] Đang cầm: ${currentTool.name}. Có đúng loại '${toolType}' không? ${currentToolIsCorrectType}. Tier: ${currentTier}`);
+    }
+    console.debug(
+      `[Collect Equip] Đang cầm: ${currentTool.name}. Có đúng loại '${toolType}' không? ${currentToolIsCorrectType}. Tier: ${currentTier}`
+    );
   } else {
-       console.debug(`[Collect Equip] Tay không.`);
+    console.debug(`[Collect Equip] Tay không.`);
   }
-
 
   // 2. Tìm tool TỐT NHẤT (tier cao nhất) của ĐÚNG LOẠI trong inventory
   for (const item of bot.inventory.items()) {
-      let itemIsCorrectType = false;
-      let itemTier = -1;
+    let itemIsCorrectType = false;
+    let itemTier = -1;
 
-      if (toolType === 'shears') {
-           itemIsCorrectType = isShears(item.name);
-           itemTier = itemIsCorrectType ? 99 : -1;
-      } else {
-           itemIsCorrectType = isToolOfType(item.name, toolType);
-           if (itemIsCorrectType) {
-               const material = item.name.split("_")[0];
-               itemTier = toolMaterialTier[material] || 0;
-           }
+    if (toolType === "shears") {
+      itemIsCorrectType = isShears(item.name);
+      itemTier = itemIsCorrectType ? 99 : -1;
+    } else {
+      itemIsCorrectType = isToolOfType(item.name, toolType);
+      if (itemIsCorrectType) {
+        const material = item.name.split("_")[0];
+        itemTier = toolMaterialTier[material] || 0;
       }
+    }
 
-      // Nếu item này đúng loại và có tier cao hơn tier cao nhất đã tìm thấy
-      if (itemIsCorrectType && itemTier > highestTier) {
-          highestTier = itemTier;
-          bestToolFound = item;
-          console.debug(`[Collect Equip] Tìm thấy ứng viên tốt hơn: ${item.name} (Tier: ${itemTier})`);
-      }
+    // Nếu item này đúng loại và có tier cao hơn tier cao nhất đã tìm thấy
+    if (itemIsCorrectType && itemTier > highestTier) {
+      highestTier = itemTier;
+      bestToolFound = item;
+      console.debug(
+        `[Collect Equip] Tìm thấy ứng viên tốt hơn: ${item.name} (Tier: ${itemTier})`
+      );
+    }
   }
 
   // 3. Nếu không tìm thấy tool nào đúng loại VÀ cho phép cấp thấp (allowDowngrade)
-  if (!bestToolFound && allowDowngrade) {
-       console.debug(`[Collect Equip] Không tìm thấy tool '${toolType}'. Tìm loại mặc định cho tình huống hiện tại (nếu đào block)...`);
-       // Logic này phức tạp và dễ sai, tạm thời không dùng.
-       // Nếu không tìm thấy tool đúng loại, equipBestTool nên trả về false.
-       // Việc quyết định có đào tay hay không nên ở hàm gọi (handleCollection).
-       console.warn(`[Collect Equip] Không tìm thấy tool loại '${toolType}'${allowDowngrade ? ' và allowDowngrade=true' : ''}. Sẽ không trang bị gì.`);
-
-  }
+  // Bỏ qua logic phức tạp không cần thiết ở đây trong phiên bản gốc
+  // if (!bestToolFound && allowDowngrade) { ... }
 
   // 4. Quyết định trang bị
-  // Có nên trang bị không?
-  // - Nếu tìm thấy tool tốt nhất (bestToolFound != null)
-  // - VÀ ( Hiện tại đang cầm tay không HOẶC tool đang cầm không phải tool tốt nhất tìm được )
-  if (bestToolFound && (!currentTool || currentTool.name !== bestToolFound.name)) {
-       try {
-          console.log(`[Collect Equip] Trang bị tool tốt nhất tìm được: ${bestToolFound.name}...`);
-          await bot.equip(bestToolFound, "hand");
-          console.log(`[Collect Equip] Đã trang bị ${bestToolFound.name}.`);
-          await bot.waitForTicks(2); // Chờ 2 ticks cho chắc
-          return true; // Trang bị thành công
-      } catch (err) {
-          console.error(`[Collect Equip] Lỗi trang bị ${bestToolFound.name}:`, err.message);
-          bot.chat(`Không thể trang bị ${bestToolFound.displayName || bestToolFound.name}!`);
-          return false; // Trang bị thất bại
-      }
-  }
-  // Trường hợp đã cầm sẵn tool tốt nhất tìm được (hoặc tool tốt nhất là null)
-  else if (bestToolFound && currentTool && currentTool.name === bestToolFound.name) {
-       console.debug(`[Collect Equip] Đã cầm sẵn tool phù hợp: ${bestToolFound.name}.`);
-       return true; // Đã cầm sẵn, thành công
-  }
-  // Trường hợp không tìm thấy tool nào (bestToolFound is null)
-  else {
-      if (currentToolIsCorrectType && allowDowngrade) {
-           console.debug(`[Collect Equip] Không tìm thấy tool tốt hơn, nhưng đang cầm tool đúng loại (${currentTool.name}) và allowDowngrade=true. Giữ nguyên.`);
-           return true; // Giữ tool đang cầm (dù cấp thấp) cũng coi như thành công trong trường hợp này
-      } else {
-           console.log(`[Collect Equip] Không tìm thấy tool '${toolType}' phù hợp để trang bị.`);
-           return false; // Không tìm thấy tool phù hợp
-      }
+  if (
+    bestToolFound &&
+    (!currentTool || currentTool.name !== bestToolFound.name)
+  ) {
+    try {
+      console.log(
+        `[Collect Equip] Trang bị tool tốt nhất tìm được: ${bestToolFound.name}...`
+      );
+      await bot.equip(bestToolFound, "hand");
+      // Không log `bot.heldItem.name` ngay sau equip vì có thể chưa cập nhật
+      console.log(
+        `[Collect Equip] Đã gửi lệnh trang bị ${bestToolFound.name}.`
+      );
+      await bot.waitForTicks(2); // Chờ 2 ticks cho chắc
+      return true; // Trang bị thành công
+    } catch (err) {
+      console.error(
+        `[Collect Equip] Lỗi trang bị ${bestToolFound.name}:`,
+        err.message
+      );
+      try {
+        bot.chat(
+          `Không thể trang bị ${
+            bestToolFound.displayName || bestToolFound.name
+          }!`
+        );
+      } catch (e) {}
+      return false; // Trang bị thất bại
+    }
+  } else if (
+    bestToolFound &&
+    currentTool &&
+    currentTool.name === bestToolFound.name
+  ) {
+    console.debug(
+      `[Collect Equip] Đã cầm sẵn tool phù hợp: ${bestToolFound.name}.`
+    );
+    return true; // Đã cầm sẵn, thành công
+  } else {
+    if (currentToolIsCorrectType && allowDowngrade) {
+      console.debug(
+        `[Collect Equip] Không tìm thấy tool tốt hơn, nhưng đang cầm tool đúng loại (${currentTool.name}) và allowDowngrade=true. Giữ nguyên.`
+      );
+      return true;
+    } else {
+      console.log(
+        `[Collect Equip] Không tìm thấy tool '${toolType}' phù hợp để trang bị.`
+      );
+      return false;
+    }
   }
 }
 
@@ -177,35 +211,41 @@ function findNearbyBlock(bot, taskDetails) {
   console.debug(
     `[Collect Find Nearby] Tìm ${taskDetails.itemId} (ID: ${blockId}) bán kính ${NEARBY_BLOCK_FIND_RADIUS}...`
   );
-  const nearbyBlocksPos = bot.findBlocks({
-    matching: blockId,
-    maxDistance: NEARBY_BLOCK_FIND_RADIUS,
-    count: 30,
-    useExtraChunks: true,
-    point: bot.entity.position.offset(0, 0.1, 0), // Hơi nâng điểm gốc tìm kiếm lên một chút
-  });
-  if (nearbyBlocksPos.length > 0) {
-    nearbyBlocksPos.sort(
-      (a, b) =>
-        bot.entity.position.distanceSquared(a) -
-        bot.entity.position.distanceSquared(b)
-    );
-    const botY = bot.entity.position.y;
-    // Ưu tiên khối gần tầm mắt hơn
-    const preferredBlockPos = nearbyBlocksPos.find(
-      (pos) => Math.abs(pos.y - (botY + 0.5)) <= 2.5
-    );
-    const closestBlockPos = preferredBlockPos || nearbyBlocksPos[0];
-
-    const closestBlock = bot.blockAt(closestBlockPos);
-    if (closestBlock) {
-      console.log(
-        `[Collect Find Nearby] Tìm thấy gần nhất tại ${formatCoords(
-          closestBlock.position
-        )}.`
+  try {
+    const nearbyBlocksPos = bot.findBlocks({
+      matching: blockId,
+      maxDistance: NEARBY_BLOCK_FIND_RADIUS,
+      count: 30,
+      useExtraChunks: true,
+      point: bot.entity.position.offset(0, 0.1, 0),
+    });
+    if (nearbyBlocksPos.length > 0) {
+      nearbyBlocksPos.sort(
+        (a, b) =>
+          bot.entity.position.distanceSquared(a) -
+          bot.entity.position.distanceSquared(b)
       );
-      return closestBlock;
+      const botY = bot.entity.position.y;
+      const preferredBlockPos = nearbyBlocksPos.find(
+        (pos) => Math.abs(pos.y - (botY + 0.5)) <= 2.5
+      );
+      const closestBlockPos = preferredBlockPos || nearbyBlocksPos[0];
+
+      const closestBlock = bot.blockAt(closestBlockPos);
+      if (closestBlock) {
+        console.log(
+          `[Collect Find Nearby] Tìm thấy gần nhất tại ${formatCoords(
+            closestBlock.position
+          )}.`
+        );
+        return closestBlock;
+      }
     }
+  } catch (err) {
+    console.error(
+      `[Collect Find Nearby] Lỗi khi tìm block ${taskDetails.itemId}:`,
+      err
+    );
   }
   console.debug(
     `[Collect Find Nearby] Không tìm thấy ${taskDetails.itemId} gần đó.`
@@ -221,43 +261,51 @@ function findFarBlock(bot, taskDetails) {
   console.debug(
     `[Collect Find Far] Tìm ${taskDetails.itemId} (ID: ${blockId}) bán kính ${MAX_COLLECT_FIND_DISTANCE}...`
   );
-  const foundBlocks = bot.findBlocks({
-    matching: blockId,
-    maxDistance: MAX_COLLECT_FIND_DISTANCE,
-    count: 50,
-    useExtraChunks: true,
-    point: bot.entity.position.offset(0, 0.1, 0),
-  });
+  try {
+    const foundBlocks = bot.findBlocks({
+      matching: blockId,
+      maxDistance: MAX_COLLECT_FIND_DISTANCE,
+      count: 50,
+      useExtraChunks: true,
+      point: bot.entity.position.offset(0, 0.1, 0),
+    });
 
-  if (foundBlocks.length === 0) {
-    console.log(
-      `[Collect Find Far] Không tìm thấy ${taskDetails.itemId} nào khác.`
+    if (foundBlocks.length === 0) {
+      console.log(
+        `[Collect Find Far] Không tìm thấy ${taskDetails.itemId} nào khác.`
+      );
+      return null;
+    }
+
+    foundBlocks.sort(
+      (a, b) =>
+        bot.entity.position.distanceSquared(a) -
+        bot.entity.position.distanceSquared(b)
     );
-    return null;
-  }
-
-  foundBlocks.sort(
-    (a, b) =>
-      bot.entity.position.distanceSquared(a) -
-      bot.entity.position.distanceSquared(b)
-  );
-  // Ưu tiên khối không quá cao/thấp so với bot
-  const botY = bot.entity.position.y;
-  const preferredBlockPos = foundBlocks.find(
-    (pos) => Math.abs(pos.y - botY) <= 10
-  ); // Nới lỏng phạm vi Y
-  const targetBlockPos = preferredBlockPos || foundBlocks[0];
-
-  const foundBlock = bot.blockAt(targetBlockPos);
-  if (foundBlock) {
-    console.log(
-      `[Collect Find Far] Tìm thấy xa tại ${formatCoords(foundBlock.position)}.`
+    const botY = bot.entity.position.y;
+    const preferredBlockPos = foundBlocks.find(
+      (pos) => Math.abs(pos.y - botY) <= 10
     );
-    return foundBlock;
+    const targetBlockPos = preferredBlockPos || foundBlocks[0];
+
+    const foundBlock = bot.blockAt(targetBlockPos);
+    if (foundBlock) {
+      console.log(
+        `[Collect Find Far] Tìm thấy xa tại ${formatCoords(
+          foundBlock.position
+        )}.`
+      );
+      return foundBlock;
+    }
+    console.log(
+      `[Collect Find Far] Không tìm thấy ${taskDetails.itemId} nào khác (lỗi blockAt?).`
+    );
+  } catch (err) {
+    console.error(
+      `[Collect Find Far] Lỗi khi tìm block ${taskDetails.itemId}:`,
+      err
+    );
   }
-  console.log(
-    `[Collect Find Far] Không tìm thấy ${taskDetails.itemId} nào khác (lỗi blockAt?).`
-  );
   return null;
 }
 
@@ -276,200 +324,251 @@ function findTreeBase(bot, startLogBlock) {
     `[Tree Logic] Bắt đầu tìm gốc từ ${formatCoords(startLogBlock.position)}.`
   );
 
-  while (attempts < maxCheckDepth) {
-    attempts++;
-    const posBelow = currentPos.offset(0, -1, 0);
-    const blockBelow = bot.blockAt(posBelow);
+  try {
+    while (attempts < maxCheckDepth) {
+      attempts++;
+      const posBelow = currentPos.offset(0, -1, 0);
+      const blockBelow = bot.blockAt(posBelow);
 
-    if (
-      !blockBelow ||
-      blockBelow.name === "air" ||
-      blockBelow.name === "cave_air"
-    ) {
-      console.debug(
-        `[Tree Logic] Gặp không khí/không có khối ở ${formatCoords(
-          posBelow
-        )}. Dừng tìm gốc. Gốc là ${formatCoords(basePos)}.`
-      );
-      break;
+      if (
+        !blockBelow ||
+        blockBelow.name === "air" ||
+        blockBelow.name === "cave_air"
+      ) {
+        console.debug(
+          `[Tree Logic] Gặp không khí/không có khối ở ${formatCoords(
+            posBelow
+          )}. Dừng tìm gốc. Gốc là ${formatCoords(basePos)}.`
+        );
+        break;
+      }
+
+      if (blockBelow.name === logTypeName) {
+        basePos = posBelow;
+        currentPos = posBelow;
+      } else if (groundMaterials.includes(blockBelow.name)) {
+        console.debug(
+          `[Tree Logic] Tìm thấy đất/nền (${
+            blockBelow.name
+          }) dưới ${formatCoords(currentPos)}. Gốc là ${formatCoords(basePos)}.`
+        );
+        break;
+      } else {
+        console.debug(
+          `[Tree Logic] Gặp khối lạ (${blockBelow.name}) dưới ${formatCoords(
+            currentPos
+          )}. Xem ${formatCoords(basePos)} là gốc.`
+        );
+        break;
+      }
     }
 
-    if (blockBelow.name === logTypeName) {
-      basePos = posBelow;
-      currentPos = posBelow;
-    } else if (groundMaterials.includes(blockBelow.name)) {
-      console.debug(
-        `[Tree Logic] Tìm thấy đất/nền (${blockBelow.name}) dưới ${formatCoords(
-          currentPos
-        )}. Gốc là ${formatCoords(basePos)}.`
+    if (attempts >= maxCheckDepth)
+      console.warn(
+        `[Tree Logic] Đạt giới hạn (${maxCheckDepth}) tìm gốc cây từ ${formatCoords(
+          startLogBlock.position
+        )}.`
       );
-      break;
+    const finalBaseBlock = bot.blockAt(basePos);
+    if (finalBaseBlock && finalBaseBlock.name === logTypeName) {
+      // Kiểm tra lại gốc là gỗ
+      console.log(
+        `[Tree Logic] Xác định gốc ${logTypeName} tại ${formatCoords(
+          finalBaseBlock.position
+        )}.`
+      );
+      return finalBaseBlock;
     } else {
-      console.debug(
-        `[Tree Logic] Gặp khối lạ (${blockBelow.name}) dưới ${formatCoords(
-          currentPos
-        )}. Xem ${formatCoords(basePos)} là gốc.`
+      console.warn(
+        `[Tree Logic] Khối gốc tại ${formatCoords(
+          basePos
+        )} không phải là ${logTypeName}. Trả về null.`
       );
-      break;
+      return null;
     }
-  }
-
-  if (attempts >= maxCheckDepth)
-    console.warn(
-      `[Tree Logic] Đạt giới hạn (${maxCheckDepth}) tìm gốc cây từ ${formatCoords(
-        startLogBlock.position
-      )}.`
-    );
-  const finalBaseBlock = bot.blockAt(basePos);
-  if (finalBaseBlock) {
-    console.log(
-      `[Tree Logic] Xác định gốc ${logTypeName} tại ${formatCoords(
-        finalBaseBlock.position
-      )}.`
-    );
-    return finalBaseBlock;
-  } else {
-    console.error(
-      `[Tree Logic] Lỗi: Không thể lấy block gốc tại ${formatCoords(basePos)}.`
-    );
+  } catch (err) {
+    console.error(`[Tree Logic] Lỗi khi tìm gốc cây:`, err);
     return null;
   }
 }
 
 // =============================================================================
-// CẢI TIẾN CLEAROBSTRUCTINGLEAVES
+// CẢI TIẾN CLEAROBSTRUCTINGLEAVES (Phiên bản gốc của bạn)
 // =============================================================================
 async function clearObstructingLeaves(bot, targetPos) {
-  console.debug(`[Tree Logic] Bắt đầu kiểm tra & dọn lá cây quanh ${formatCoords(targetPos)}`);
+  console.debug(
+    `[Tree Logic] Bắt đầu kiểm tra & dọn lá cây quanh ${formatCoords(
+      targetPos
+    )}`
+  );
   const mcData = require("minecraft-data")(bot.version);
   let clearedSomething = false;
-  const originalTool = bot.heldItem; // Lưu lại tool ban đầu
-  let equippedToolForClearing = null; // Lưu tên tool đã chủ động trang bị (shears/axe)
+  const originalTool = bot.heldItem ? { ...bot.heldItem } : null; // Clone
+  let equippedToolForClearing = null;
 
   // --- Chọn tool để dọn lá ---
-  let toolToUse = null; // Item object
-  let toolToUseType = 'hand'; // 'shears', 'axe', 'hand'
+  let toolToUse = null;
+  let toolToUseType = "hand";
 
-  // 1. Ưu tiên Kéo
-  const shears = bot.inventory.findInventoryItem(mcData.itemsByName.shears.id, null);
+  const shears = bot.inventory.findInventoryItem(mcData.itemsByName.shears?.id);
   if (shears) {
-      toolToUse = shears;
-      toolToUseType = 'shears';
-      console.debug("[Tree Logic] Ưu tiên dùng Kéo.");
+    toolToUse = shears;
+    toolToUseType = "shears";
+    console.debug("[Tree Logic] Ưu tiên dùng Kéo.");
   } else {
-      // 2. Nếu không có kéo, tìm Rìu tốt nhất
-      console.debug("[Tree Logic] Không có kéo, tìm rìu...");
-      let bestAxe = null;
-      let highestAxeTier = -1;
-      for (const item of bot.inventory.items()) {
-           if (isToolOfType(item.name, 'axe')) { // Kiểm tra chặt chẽ là rìu
-               const material = item.name.split("_")[0];
-               const tier = toolMaterialTier[material] || 0;
-               if (tier > highestAxeTier) {
-                   highestAxeTier = tier;
-                   bestAxe = item;
-               }
-           }
+    console.debug("[Tree Logic] Không có kéo, tìm rìu...");
+    let bestAxe = null;
+    let highestAxeTier = -1;
+    for (const item of bot.inventory.items()) {
+      if (isToolOfType(item.name, "axe")) {
+        const material = item.name.split("_")[0];
+        const tier = toolMaterialTier[material] || 0;
+        if (tier > highestAxeTier) {
+          highestAxeTier = tier;
+          bestAxe = item;
+        }
       }
-      if (bestAxe) {
-           toolToUse = bestAxe;
-           toolToUseType = 'axe';
-           console.debug(`[Tree Logic] Sẽ dùng Rìu tốt nhất: ${bestAxe.name}`);
-      } else {
-           console.debug("[Tree Logic] Không có rìu. Sẽ dùng tool đang cầm/tay không.");
-           // toolToUse vẫn là null, toolToUseType là 'hand'
-      }
+    }
+    if (bestAxe) {
+      toolToUse = bestAxe;
+      toolToUseType = "axe";
+      console.debug(`[Tree Logic] Sẽ dùng Rìu tốt nhất: ${bestAxe.name}`);
+    } else {
+      console.debug(
+        "[Tree Logic] Không có rìu. Sẽ dùng tool đang cầm/tay không."
+      );
+    }
   }
 
   // --- Trang bị tool nếu cần ---
   if (toolToUse && (!originalTool || originalTool.name !== toolToUse.name)) {
-      try {
-          console.log(`[Tree Logic] Trang bị '${toolToUse.name}' để dọn lá...`);
-          await bot.equip(toolToUse, 'hand');
-          await bot.waitForTicks(2); // Chờ 2 ticks
-          equippedToolForClearing = toolToUse.name; // Đánh dấu đã trang bị tool này
-          console.log(`[Tree Logic] Đã trang bị ${bot.heldItem?.name} để dọn lá.`);
-      } catch (err) {
-          console.warn(`[Tree Logic] Lỗi trang bị '${toolToUse.name}': ${err.message}. Sẽ dùng tool đang cầm/tay.`);
-          equippedToolForClearing = null; // Trang bị thất bại
-          toolToUse = null; // Quay về dùng tay/tool cũ
-          toolToUseType = 'hand';
-          // Cố gắng equip lại tool ban đầu nếu có thể?
-          if (originalTool && bot.heldItem?.name !== originalTool.name) {
-               try { await bot.equip(originalTool, 'hand'); await bot.waitForTicks(1); } catch(e){}
-          } else if (!originalTool && bot.heldItem) {
-               try { await bot.unequip('hand'); await bot.waitForTicks(1); } catch(e){}
-          }
+    try {
+      console.log(`[Tree Logic] Trang bị '${toolToUse.name}' để dọn lá...`);
+      await bot.equip(toolToUse, "hand");
+      await bot.waitForTicks(2);
+      equippedToolForClearing = toolToUse.name;
+      console.log(`[Tree Logic] Đã trang bị ${bot.heldItem?.name} để dọn lá.`);
+    } catch (err) {
+      console.warn(
+        `[Tree Logic] Lỗi trang bị '${toolToUse.name}': ${err.message}. Sẽ dùng tool đang cầm/tay.`
+      );
+      equippedToolForClearing = null;
+      toolToUse = null;
+      toolToUseType = "hand";
+      if (originalTool && bot.heldItem?.name !== originalTool.name) {
+        try {
+          await bot.equip(originalTool, "hand");
+          await bot.waitForTicks(1);
+        } catch (e) {}
+      } else if (!originalTool && bot.heldItem) {
+        try {
+          await bot.unequip("hand");
+          await bot.waitForTicks(1);
+        } catch (e) {}
       }
-  } else if (toolToUse && originalTool && originalTool.name === toolToUse.name) {
-      console.debug(`[Tree Logic] Đã cầm sẵn tool phù hợp (${toolToUse.name}).`);
-      equippedToolForClearing = toolToUse.name; // Coi như đã "chủ động" dùng tool này
+    }
+  } else if (
+    toolToUse &&
+    originalTool &&
+    originalTool.name === toolToUse.name
+  ) {
+    console.debug(`[Tree Logic] Đã cầm sẵn tool phù hợp (${toolToUse.name}).`);
+    equippedToolForClearing = toolToUse.name;
   }
 
   // --- Quét và phá lá ---
-  console.log(`[Tree Logic] Bắt đầu quét lá. Sẽ dùng: ${bot.heldItem?.name || 'tay không'}`);
-  for (let dy = LEAF_CLEAR_RADIUS + 1; dy >= 0; dy--) {
+  console.log(
+    `[Tree Logic] Bắt đầu quét lá. Sẽ dùng: ${
+      bot.heldItem?.name || "tay không"
+    }`
+  );
+  try {
+    for (let dy = LEAF_CLEAR_RADIUS + 1; dy >= 0; dy--) {
       for (let dx = -LEAF_CLEAR_RADIUS; dx <= LEAF_CLEAR_RADIUS; dx++) {
-          for (let dz = -LEAF_CLEAR_RADIUS; dz <= LEAF_CLEAR_RADIUS; dz++) {
-              const checkPos = targetPos.offset(dx, dy, dz);
-              if (checkPos.equals(targetPos)) continue;
+        for (let dz = -LEAF_CLEAR_RADIUS; dz <= LEAF_CLEAR_RADIUS; dz++) {
+          const checkPos = targetPos.offset(dx, dy, dz);
+          if (checkPos.equals(targetPos)) continue;
 
-              const block = bot.blockAt(checkPos);
-              // Kiểm tra cả lá và các loại tương tự
-              if (block && leafNames.some(name => block.name.includes(name))) {
-                   if (bot.entity.position.distanceTo(checkPos.offset(0.5, 0.5, 0.5)) > REACH_BLOCK_DIST + 0.5) {
-                      continue;
-                  }
+          const block = bot.blockAt(checkPos);
+          if (block && leafNames.some((name) => block.name.includes(name))) {
+            if (
+              bot.entity.position.distanceTo(checkPos.offset(0.5, 0.5, 0.5)) >
+              REACH_BLOCK_DIST + 0.5
+            ) {
+              continue;
+            }
 
-                  // Luôn kiểm tra lại khả năng đào bằng tool đang cầm
-                  if (bot.canDigBlock(block)) {
-                       // Log chính xác tool đang dùng
-                       const currentHeldItemName = bot.heldItem?.name || 'tay không';
-                       console.log(`[Tree Logic] Phá lá ${block.name} tại ${formatCoords(checkPos)} bằng ${currentHeldItemName}`);
-                      try {
-                          await bot.dig(block);
-                          await bot.waitForTicks(1); // Chờ sau khi đào
-                          clearedSomething = true;
-                      } catch (err) {
-                          console.warn(`[Tree Logic] Lỗi khi phá lá tại ${formatCoords(checkPos)} bằng ${currentHeldItemName}: ${err.message}`);
-                          // Kiểm tra xem có phải lỗi do tool không? Nếu là lỗi tool thì hơi lạ vì canDigBlock=true
-                      }
-                  } else {
-                      console.warn(`[Tree Logic] Không thể phá lá ${block.name} tại ${formatCoords(checkPos)} bằng ${bot.heldItem?.name || 'tay không'} (canDigBlock=false).`);
-                  }
+            if (bot.canDigBlock(block)) {
+              const currentHeldItemName = bot.heldItem?.name || "tay không";
+              try {
+                await bot.dig(block);
+                await bot.waitForTicks(1);
+                clearedSomething = true;
+              } catch (err) {
+                // Kiểm tra lại block trước khi log lỗi
+                const blockAfterError = bot.blockAt(checkPos);
+                if (blockAfterError && blockAfterError.name === block.name) {
+                  console.warn(
+                    `[Tree Logic] Lỗi khi phá lá tại ${formatCoords(
+                      checkPos
+                    )} bằng ${currentHeldItemName}: ${err.message}`
+                  );
+                } else {
+                  console.debug(
+                    `[Tree Logic] Lá tại ${formatCoords(
+                      checkPos
+                    )} đã biến mất khi đang phá.`
+                  );
+                }
               }
+            } else {
+              // console.warn(`[Tree Logic] Không thể phá lá ${block.name} tại ${formatCoords(checkPos)} bằng ${bot.heldItem?.name || 'tay không'} (canDigBlock=false).`);
+            }
           }
+        }
       }
+    }
+  } catch (loopError) {
+    console.error("[Tree Logic] Lỗi trong vòng lặp quét lá:", loopError);
   }
 
   // --- Trang bị lại tool ban đầu ---
-  // Chỉ trang bị lại nếu chúng ta đã chủ động trang bị tool khác LÚC BAN ĐẦU
-  if (equippedToolForClearing) { // Check nếu chúng ta có trang bị tool mới
-       if (originalTool && bot.heldItem?.name !== originalTool.name) { // Và tool hiện tại khác tool gốc
-           console.log(`[Tree Logic] Dọn lá xong. Trang bị lại tool ban đầu: ${originalTool.name}`);
-           try {
-               await bot.equip(originalTool, 'hand');
-               await bot.waitForTicks(2); // Chờ 2 ticks
-               console.log(`[Tree Logic] Đã trang bị lại ${bot.heldItem?.name}.`);
-           } catch (err) {
-               console.warn('[Tree Logic] Lỗi trang bị lại tool gốc:', err.message);
-           }
-       } else if (!originalTool && bot.heldItem) { // Tool gốc là tay không, mà giờ đang cầm tool
-           console.log(`[Tree Logic] Dọn lá xong. Bỏ tool '${bot.heldItem.name}' ra khỏi tay.`);
-           try {
-               await bot.unequip('hand');
-               await bot.waitForTicks(2); // Chờ 2 ticks
-               console.log(`[Tree Logic] Đã bỏ tool khỏi tay.`);
-           } catch (e) { console.warn('[Tree Logic] Lỗi bỏ trang bị tay:', e.message); }
-       } else {
-            // Trường hợp tool gốc trùng tool trang bị, hoặc tool gốc là tay không và giờ cũng là tay không
-            console.debug(`[Tree Logic] Dọn lá xong. Tool hiện tại (${bot.heldItem?.name || 'tay không'}) đã đúng với trạng thái mong muốn.`);
-       }
-  } else {
-      // Nếu không chủ động trang bị tool nào lúc đầu (ví dụ dùng tay hoặc tool đang cầm sẵn)
-       console.debug(`[Tree Logic] Dọn lá xong. Không cần đổi lại tool (đã dùng ${bot.heldItem?.name || 'tay không'}).`);
+  try {
+    if (equippedToolForClearing) {
+      if (originalTool && bot.heldItem?.name !== originalTool.name) {
+        console.log(
+          `[Tree Logic] Dọn lá xong. Trang bị lại tool ban đầu: ${originalTool.name}`
+        );
+        await bot.equip(originalTool, "hand");
+        await bot.waitForTicks(2);
+        console.log(`[Tree Logic] Đã trang bị lại ${bot.heldItem?.name}.`);
+      } else if (!originalTool && bot.heldItem) {
+        console.log(
+          `[Tree Logic] Dọn lá xong. Bỏ tool '${bot.heldItem.name}' ra khỏi tay.`
+        );
+        await bot.unequip("hand");
+        await bot.waitForTicks(2);
+        console.log(`[Tree Logic] Đã bỏ tool khỏi tay.`);
+      } else {
+        console.debug(
+          `[Tree Logic] Dọn lá xong. Tool hiện tại (${
+            bot.heldItem?.name || "tay không"
+          }) đã đúng với trạng thái mong muốn.`
+        );
+      }
+    } else {
+      console.debug(
+        `[Tree Logic] Dọn lá xong. Không cần đổi lại tool (đã dùng ${
+          bot.heldItem?.name || "tay không"
+        }).`
+      );
+    }
+  } catch (equipError) {
+    console.warn(
+      "[Tree Logic] Lỗi khi trang bị lại tool sau khi dọn lá:",
+      equipError.message
+    );
   }
-
 
   console.debug(`[Tree Logic] Kết thúc dọn lá. Cleared: ${clearedSomething}`);
   return clearedSomething;
@@ -503,10 +602,10 @@ async function handleTreeCollection(bot) {
       }
       if (task.consecutivePathErrors >= MAX_PATHFINDER_ERRORS) {
            console.error(`[Tree Logic] Quá nhiều lỗi pathfinder (${task.consecutivePathErrors}). Bỏ qua mục tiêu.`);
-           bot.chat("Gặp lỗi di chuyển liên tục, tôi sẽ tìm cây khác.");
+           try { bot.chat("Gặp lỗi di chuyển liên tục, tôi sẽ tìm cây khác."); } catch(e){}
            task.currentTreeBaseLog = null; task.currentTreeLog = null; task.status = 'idle';
            task.consecutivePathErrors = 0;
-           setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL * 2);
+           setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL * 2); // Gọi lại để tìm cây mới
            return;
       }
 
@@ -559,7 +658,7 @@ async function handleTreeCollection(bot) {
                    task.consecutivePathErrors = 0;
                    console.log(`[Tree Logic] Tìm thấy cây ${targetLogName}, gốc tại ${formatCoords(treeBase.position)}. Di chuyển đến gốc...`);
                } else if (nextLogTarget) {
-                   console.warn(`[Tree Logic] Không tìm thấy gốc hợp lệ. Thử chặt trực tiếp ${formatCoords(nextLogTarget.position)}.`);
+                   console.warn(`[Tree Logic] Không tìm thấy gốc hợp lệ cho ${formatCoords(nextLogTarget.position)}. Thử chặt trực tiếp.`);
                    task.currentTreeLog = nextLogTarget;
                    task.currentTreeBaseLog = null;
                    task.status = 'approaching_log';
@@ -576,6 +675,12 @@ async function handleTreeCollection(bot) {
 
       // --- 3. Xử lý theo trạng thái ---
       const currentLogBlock = task.currentTreeLog;
+      if (!currentLogBlock) {
+           console.error("[Tree Logic] Lỗi: currentTreeLog là null dù không phải needsNewTarget. Reset về idle.");
+           task.status = 'idle';
+           setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL);
+           return;
+      }
       const currentLogPos = currentLogBlock.position;
       const botPos = bot.entity.position;
       const distToLogCenter = bot.entity.position.distanceTo(currentLogPos.offset(0.5, 0.5, 0.5));
@@ -584,6 +689,7 @@ async function handleTreeCollection(bot) {
 
       switch (task.status) {
           case 'moving_to_tree':
+              // ... (Giữ nguyên logic moving_to_tree) ...
               console.log(`[Tree Logic] Đang di chuyển đến gốc cây tại ${formatCoords(currentLogPos)}`);
               const goalNear = new GoalNear(currentLogPos.x, currentLogPos.y, currentLogPos.z, REACH_TREE_BASE_DIST);
               try {
@@ -594,7 +700,7 @@ async function handleTreeCollection(bot) {
                   setTimeout(() => handleTreeCollection(bot), VERY_SHORT_CHECK_INTERVAL);
               } catch (err) {
                   console.error(`[Tree Logic] Lỗi pathfinder đến gốc: ${err.message}. Bỏ qua cây.`);
-                  bot.chat("Không đến được gốc cây này, tìm cây khác...");
+                  try { bot.chat("Không đến được gốc cây này, tìm cây khác..."); } catch(e){}
                   task.currentTreeBaseLog = null; task.currentTreeLog = null; task.status = 'idle';
                   task.consecutivePathErrors++;
                   setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL);
@@ -602,10 +708,11 @@ async function handleTreeCollection(bot) {
               return;
 
           case 'approaching_log':
+              // ... (Giữ nguyên logic approaching_log) ...
               console.log(`[Tree Logic] Đang tiếp cận log tại ${formatCoords(currentLogPos)}.`);
               if (isLogTooHigh) {
                   console.warn(`[Tree Logic] Log ${formatCoords(currentLogPos)} quá cao. Bỏ qua cây.`);
-                  bot.chat("Khúc gỗ này cao quá, tôi bỏ qua.");
+                  try { bot.chat("Khúc gỗ này cao quá, tôi bỏ qua."); } catch(e){}
                   task.currentTreeBaseLog = null; task.currentTreeLog = null; task.status = 'idle';
                   setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL);
                   return;
@@ -619,32 +726,37 @@ async function handleTreeCollection(bot) {
                    return;
               } else {
                    console.log(`[Tree Logic] Chưa đủ gần (${distToLogCenter.toFixed(2)} > ${REACH_BLOCK_DIST}). Di chuyển bằng GoalBlock.`);
-                   // Dọn lá có thể cần gọi lại tool logic, nên để sau khi trang bị rìu?
-                   // -> Không, nên dọn trước khi pathfinder để nó dễ tìm đường hơn
                    console.debug("[Tree Logic] Dọn lá trước khi di chuyển lại gần...");
-                   await clearObstructingLeaves(bot, currentLogPos); // Dọn lá trước pathfind
+                   await clearObstructingLeaves(bot, currentLogPos);
 
                    const goalBlock = new GoalBlock(currentLogPos.x, currentLogPos.y, currentLogPos.z);
                    try {
                       await bot.pathfinder.goto(goalBlock);
                       console.log(`[Tree Logic] Đã đến vị trí đào ${formatCoords(currentLogPos)}.`);
-                      task.status = 'reached_log';
-                      task.consecutivePathErrors = 0;
+                      if (bot.entity.position.distanceTo(currentLogPos.offset(0.5, 0.5, 0.5)) <= REACH_BLOCK_DIST) {
+                          task.status = 'reached_log';
+                          task.consecutivePathErrors = 0;
+                      } else {
+                          console.warn(`[Tree Logic] Pathfinder báo đến GoalBlock nhưng vẫn ngoài tầm? Thử lại approaching.`);
+                          task.status = 'approaching_log';
+                          task.consecutivePathErrors++;
+                      }
                       setTimeout(() => handleTreeCollection(bot), VERY_SHORT_CHECK_INTERVAL);
                   } catch (err) {
                       console.error(`[Tree Logic] Lỗi pathfinder đến log ${formatCoords(currentLogPos)}: ${err.message}.`);
-                      bot.chat("Không đến được khúc gỗ này...");
+                      try { bot.chat("Không đến được khúc gỗ này..."); } catch(e){}
                       task.consecutivePathErrors++;
-                      task.status = 'approaching_log'; // Thử lại tiếp cận
+                      task.status = 'approaching_log';
                       console.log(`[Tree Logic] Lỗi pathfinder (${task.consecutivePathErrors}/${MAX_PATHFINDER_ERRORS}). Sẽ thử lại.`);
                       setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL);
                   }
                   return;
               }
-              break;
+              // break; // Không cần
 
           case 'reached_log':
                console.log(`[Tree Logic] Đã đến vị trí log ${formatCoords(currentLogPos)}. Chuẩn bị chặt.`);
+               // ... (Kiểm tra canReachLog và isLogTooHigh giữ nguyên) ...
                if (!canReachLog) {
                    console.warn(`[Tree Logic] Vừa đến (${task.status}) nhưng lại ngoài tầm? Quay lại approaching_log.`);
                    task.status = 'approaching_log';
@@ -653,38 +765,29 @@ async function handleTreeCollection(bot) {
                }
                if (isLogTooHigh) {
                   console.warn(`[Tree Logic] Log ${formatCoords(currentLogPos)} lại quá cao? Bỏ qua cây.`);
-                  bot.chat("Khúc gỗ này tự nhiên cao lên à? Bỏ qua.");
+                  try { bot.chat("Khúc gỗ này tự nhiên cao lên à? Bỏ qua."); } catch(e){}
                   task.currentTreeBaseLog = null; task.currentTreeLog = null; task.status = 'idle';
                   setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL);
                   return;
                }
 
-               // <<< BƯỚC QUAN TRỌNG: TRANG BỊ RÌU >>>
-               if (!(await equipBestTool(bot, 'axe', true))) { // Yêu cầu rìu, cho phép cấp thấp
-                   // Không tìm thấy rìu phù hợp trong túi đồ
-                   console.error("[Tree Logic] Không tìm thấy RÌU nào trong túi đồ!");
-                   // Kiểm tra xem có thể đào tay không (mặc dù chậm)
-                   const blockToCheckHand = bot.blockAt(currentLogPos);
-                   if (blockToCheckHand && bot.canDigBlock(blockToCheckHand)) {
-                       console.warn("[Tree Logic] Không có rìu nhưng có thể chặt tay (sẽ chậm). Tiếp tục...");
-                       // Vẫn tiếp tục chặt tay
+               // <<< SỬA LOGIC TRANG BỊ VÀ KIỂM TRA >>>
+               let hasRequiredTool = false; // Biến theo dõi có tool phù hợp không
+               if (await equipBestTool(bot, 'axe', true)) { // Thử trang bị rìu (cho phép cấp thấp)
+                   // Kiểm tra lại sau khi equip (nhưng không dừng nếu chưa cập nhật)
+                   const currentHeldAfterEquip = bot.heldItem;
+                   if (currentHeldAfterEquip && isToolOfType(currentHeldAfterEquip.name, 'axe')) {
+                       console.log(`[Tree Logic] Đã xác nhận cầm rìu phù hợp: ${currentHeldAfterEquip.name}.`);
+                       hasRequiredTool = true;
                    } else {
-                       // Không có rìu VÀ không thể chặt tay -> Dừng
-                       finishCollectingTask(bot, false, "Không có rìu và không thể chặt cây bằng tay.");
-                       return;
+                       // Chỉ cảnh báo, không dừng
+                       console.warn(`[Tree Logic] Cảnh báo: Đã thử trang bị rìu nhưng có vẻ chưa cầm (${currentHeldAfterEquip?.name}). Sẽ thử chặt bằng tool hiện tại.`);
                    }
                } else {
-                   // Đã trang bị được rìu (hoặc đang cầm sẵn rìu phù hợp)
-                    const currentHeld = bot.heldItem;
-                    if (!currentHeld || !isToolOfType(currentHeld.name, 'axe')) {
-                         // Lỗi cực kỳ lạ: equipBestTool trả về true nhưng không cầm rìu?
-                         console.error(`[Tree Logic] LỖI LOGIC! equipBestTool('axe') trả về true nhưng đang cầm ${currentHeld?.name}! Dừng.`);
-                          finishCollectingTask(bot, false, "Lỗi logic nghiêm trọng khi trang bị rìu.");
-                          return;
-                    }
-                    console.log(`[Tree Logic] Đã cầm rìu phù hợp: ${currentHeld.name}.`);
+                   // equipBestTool trả về false -> không tìm thấy rìu nào
+                   console.warn("[Tree Logic] Không tìm thấy RÌU nào trong túi đồ. Sẽ thử chặt bằng tool đang cầm/tay.");
                }
-               // -> Tại đây, bot hoặc đang cầm rìu, hoặc sẽ chặt bằng tay nếu không có rìu.
+               // -> Tại đây, hasRequiredTool = true nếu chắc chắn đang cầm rìu, ngược lại là false.
 
                // Kiểm tra lại block
                const blockNow = bot.blockAt(currentLogPos);
@@ -695,27 +798,37 @@ async function handleTreeCollection(bot) {
                    return;
                }
 
-               // Kiểm tra lại khả năng đào bằng tool hiện tại (có thể là rìu hoặc tay)
+               // Kiểm tra lại khả năng đào bằng tool hiện tại (quan trọng!)
                if (!bot.canDigBlock(blockNow)) {
-                   console.error(`[Tree Logic] Vẫn KHÔNG THỂ ĐÀO ${blockNow.name} bằng ${bot.heldItem?.name || 'tay'} (canDigBlock=false)? Bỏ qua cây.`);
-                   bot.chat(`Không hiểu sao không chặt được ${task.itemNameVi} dù đã cố. Bỏ qua cây này.`);
-                   task.currentTreeBaseLog = null; task.currentTreeLog = null; task.status = 'idle';
-                   setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL);
-                   return;
+                   // Nếu không đào được VÀ không có rìu (hasRequiredTool=false) -> dừng hẳn
+                   if (!hasRequiredTool) {
+                        console.error(`[Tree Logic] Không có rìu VÀ không thể chặt ${blockNow.name} bằng ${bot.heldItem?.name || 'tay'}. Dừng.`);
+                        finishCollectingTask(bot, false, "Không có rìu và không thể chặt cây bằng tay.");
+                        return; // Kết thúc hàm hoàn toàn
+                   } else {
+                   // Nếu có rìu mà vẫn không đào được -> lỗi lạ, bỏ qua cây
+                        console.error(`[Tree Logic] Đang cầm rìu (${bot.heldItem?.name}) nhưng KHÔNG THỂ ĐÀO ${blockNow.name} (canDigBlock=false)? Bỏ qua cây.`);
+                        try { bot.chat(`Không hiểu sao không chặt được ${task.itemNameVi} dù đã cố. Bỏ qua cây này.`); } catch(e){}
+                        task.currentTreeBaseLog = null; task.currentTreeLog = null; task.status = 'idle';
+                        setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL);
+                        return; // Thoát khỏi case này
+                   }
                }
+               // Nếu canDigBlock = true -> có thể chặt (dù bằng tay hay rìu)
 
-               // Dọn lá lần cuối (sử dụng tool đang cầm: rìu/kéo/tay)
+               // Dọn lá lần cuối (dùng tool đang cầm)
                console.debug("[Tree Logic] Dọn lá lần cuối trước khi chặt.");
                await clearObstructingLeaves(bot, currentLogPos);
 
                // Kiểm tra lại block SAU KHI dọn lá
                const blockAfterClear = bot.blockAt(currentLogPos);
                if (!blockAfterClear || blockAfterClear.name !== targetLogName) {
-                   console.warn(`[Tree Logic] Khối log biến mất *sau khi* dọn lá?`);
+                   console.warn(`[Tree Logic] Khối log biến mất *sau khi* dọn lá? Tìm lại...`);
                    task.currentTreeLog = null; task.status = 'idle';
                    setTimeout(() => handleTreeCollection(bot), SHORT_CHECK_INTERVAL);
                    return;
                }
+               // Kiểm tra lại khả năng đào sau khi dọn lá
                if (!bot.canDigBlock(blockAfterClear)) {
                    console.error(`[Tree Logic] Không thể đào block ${blockAfterClear.name} SAU KHI DỌN LÁ bằng ${bot.heldItem?.name || 'tay'}? Lỗi lạ. Bỏ qua.`);
                     task.currentTreeBaseLog = null; task.currentTreeLog = null; task.status = 'idle';
@@ -736,28 +849,31 @@ async function handleTreeCollection(bot) {
                    task.status = 'waiting_pickup';
                    task.pickupAttempts = 0;
                    task.amountBeforePickup = amountBeforeDig;
-                   setTimeout(() => handleTreeCollection(bot), ITEM_PICKUP_WAIT_TICKS * 50);
+                   setTimeout(() => handleTreeCollection(bot), ITEM_PICKUP_WAIT_TICKS * 50); // Chờ nhặt
                    return;
                } catch (digError) {
                    console.error(`[Tree Logic] Lỗi khi chặt log ${formatCoords(currentLogPos)}: ${digError.message}`);
                    const blockCheckAfterError = bot.blockAt(currentLogPos);
                    if (!blockCheckAfterError || blockCheckAfterError.name !== targetLogName) {
-                       console.log("[Tree Logic] Block không còn tồn tại sau lỗi chặt.");
-                   } else { bot.chat(`Lỗi khi chặt cây: ${digError.message}.`); }
-                   task.currentTreeLog = null; task.status = 'idle';
+                       console.log("[Tree Logic] Block không còn tồn tại sau lỗi chặt. Tìm tiếp...");
+                   } else {
+                       try { bot.chat(`Lỗi khi chặt cây: ${digError.message}.`); } catch(e){}
+                   }
+                   task.currentTreeLog = null; task.status = 'idle'; // Tìm lại từ đầu
                    setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL);
                    return;
                }
-               break;
+               // break; // Không cần
 
-           // ... (các case 'chopping', 'waiting_pickup', 'idle', default giữ nguyên như phiên bản trước) ...
            case 'chopping':
+               // ... (Giữ nguyên logic chopping) ...
                console.warn("[Tree Logic] Bị kẹt ở trạng thái 'chopping'? Đặt lại thành 'reached_log'.");
                task.status = 'reached_log';
                setTimeout(() => handleTreeCollection(bot), SHORT_CHECK_INTERVAL);
                return;
 
            case 'waiting_pickup':
+              // ... (Giữ nguyên logic waiting_pickup, bao gồm cả bot.chat) ...
               task.pickupAttempts++;
               console.debug(`[Tree Logic] Chờ nhặt lần ${task.pickupAttempts}/${ITEM_PICKUP_MAX_ATTEMPTS}...`);
               const amountAfterWait = countItemManually(bot.inventory, countItemId);
@@ -766,13 +882,13 @@ async function handleTreeCollection(bot) {
                   const pickedUpCount = amountAfterWait - task.amountBeforePickup;
                   console.log(`[Tree Logic] Xác nhận nhặt được ${pickedUpCount} ${countItemName}! SL: ${amountAfterWait}`);
                   task.currentQuantity = amountAfterWait;
-                  bot.chat(`+${pickedUpCount} ${task.itemNameVi}. (${amountAfterWait}/${task.targetQuantity})`);
+                  try { bot.chat(`+${pickedUpCount} ${task.itemNameVi}. (${amountAfterWait}/${task.targetQuantity})`); } catch(e){}
                   task.currentTreeLog = null;
                   task.status = 'idle';
                   setTimeout(() => handleTreeCollection(bot), VERY_SHORT_CHECK_INTERVAL);
                   return;
               } else if (task.pickupAttempts >= ITEM_PICKUP_MAX_ATTEMPTS) {
-                  console.warn(`[Tree Logic] Không xác nhận nhặt ${countItemName} sau ${task.pickupAttempts} lần. Tiếp tục...`);
+                  console.warn(`[Tree Logic] Không xác nhận nhặt ${countItemName} sau ${task.pickupAttempts} lần. Chấp nhận mất mát, tiếp tục...`);
                   task.currentQuantity = amountAfterWait;
                   task.currentTreeLog = null;
                   task.status = 'idle';
@@ -782,20 +898,22 @@ async function handleTreeCollection(bot) {
                   setTimeout(() => handleTreeCollection(bot), ITEM_PICKUP_WAIT_TICKS * 50);
                   return;
               }
-              break;
+              // break; // Không cần
 
           case 'idle':
+               // ... (Giữ nguyên logic idle) ...
                console.warn("[Tree Logic] Lặp lại ở trạng thái 'idle'? Chờ tìm mục tiêu...");
                setTimeout(() => handleTreeCollection(bot), SHORT_CHECK_INTERVAL);
                return;
 
           default:
+              // ... (Giữ nguyên logic default) ...
               console.error(`[Tree Logic] Trạng thái không xác định: ${task.status}. Reset về 'idle'.`);
               task.status = 'idle';
                setTimeout(() => handleTreeCollection(bot), CHECK_INTERVAL);
               return;
 
-      }
+      } // Kết thúc switch
 
   } catch(error) {
       console.error("[Tree Logic] Lỗi nghiêm trọng không mong muốn:", error);
@@ -804,7 +922,7 @@ async function handleTreeCollection(bot) {
 }
 
 // =============================================================================
-// HÀM LOGIC ĐÀO KHỐI (BLOCK COLLECTION) - Không thay đổi nhiều
+// HÀM LOGIC ĐÀO KHỐI (BLOCK COLLECTION) - Phiên bản gốc
 // =============================================================================
 async function handleBlockCollection(bot) {
   const task = bot.collectingTaskDetails;
@@ -853,7 +971,9 @@ async function handleBlockCollection(bot) {
       console.error(
         `[Block Logic] Quá nhiều lỗi pathfinder liên tiếp (${task.consecutivePathErrors}). Bỏ qua khối hiện tại.`
       );
-      bot.chat("Gặp lỗi di chuyển liên tục, tôi sẽ tìm khối khác.");
+      try {
+        bot.chat("Gặp lỗi di chuyển liên tục, tôi sẽ tìm khối khác.");
+      } catch (e) {}
       task.currentTarget = null;
       task.status = "idle";
       task.consecutivePathErrors = 0;
@@ -869,7 +989,6 @@ async function handleBlockCollection(bot) {
     } else {
       const currentBlockCheck = bot.blockAt(task.currentTarget.position);
       if (!currentBlockCheck || currentBlockCheck.type !== targetBlockId) {
-        // Chỉ cần check type là đủ
         needsNewTarget = true;
         console.log(
           `[Block Logic] Mục tiêu khối tại ${formatCoords(
@@ -888,7 +1007,7 @@ async function handleBlockCollection(bot) {
         task.status
       );
       task.status = "idle";
-      task.currentTarget = null;
+      task.currentTarget = null; // Đảm bảo reset
 
       console.log("[Block Logic] Bắt đầu tìm khối mới...");
       let nextTarget = findNearbyBlock(bot, task) || findFarBlock(bot, task);
@@ -897,6 +1016,7 @@ async function handleBlockCollection(bot) {
         const distToNewTarget = bot.entity.position.distanceTo(
           nextTarget.position.offset(0.5, 0.5, 0.5)
         );
+        // Quyết định trạng thái tiếp theo dựa trên khoảng cách
         if (distToNewTarget <= REACH_BLOCK_DIST) {
           console.log(
             `[Block Logic] Mục tiêu mới ${formatCoords(
@@ -914,6 +1034,7 @@ async function handleBlockCollection(bot) {
         }
         task.consecutivePathErrors = 0; // Reset lỗi khi có mục tiêu mới
       } else {
+        // Không tìm thấy khối nào nữa
         finishCollectingTask(
           bot,
           false,
@@ -921,12 +1042,13 @@ async function handleBlockCollection(bot) {
         );
         return;
       }
-      setTimeout(() => handleBlockCollection(bot), SHORT_CHECK_INTERVAL);
+      // Gọi lại ngay để xử lý state mới
+      setTimeout(() => handleBlockCollection(bot), VERY_SHORT_CHECK_INTERVAL);
       return;
     }
 
     // --- 3. Xử lý theo trạng thái ---
-    const targetBlock = task.currentTarget;
+    const targetBlock = task.currentTarget; // Đã kiểm tra không null ở trên
     const targetPosition = targetBlock.position;
     const botPos = bot.entity.position;
     const distToBlockCenter = bot.entity.position.distanceTo(
@@ -941,6 +1063,7 @@ async function handleBlockCollection(bot) {
         console.log(
           `[Block Logic] Đang di chuyển đến ${formatCoords(targetPosition)}.`
         );
+        // Kiểm tra lại xem đã đến nơi chưa (có thể pathfinder xong nhanh)
         if (canReachBlock) {
           console.log(
             `[Block Logic] Đã đến nơi khi đang 'moving'. Chuyển sang 'reached_target'.`
@@ -953,19 +1076,23 @@ async function handleBlockCollection(bot) {
           );
           return;
         }
+        // Kiểm tra độ cao trước khi di chuyển
         if (isBlockTooHigh) {
           console.warn(
             `[Block Logic] Khối ${formatCoords(
               targetPosition
             )} quá cao. Bỏ qua.`
           );
-          bot.chat("Khối này cao quá, tôi bỏ qua.");
+          try {
+            bot.chat("Khối này cao quá, tôi bỏ qua.");
+          } catch (e) {}
           task.currentTarget = null;
           task.status = "idle";
           setTimeout(() => handleBlockCollection(bot), CHECK_INTERVAL);
           return;
         }
 
+        // Di chuyển
         const goal = new GoalBlock(
           targetPosition.x,
           targetPosition.y,
@@ -976,8 +1103,21 @@ async function handleBlockCollection(bot) {
           console.log(
             `[Block Logic] Đã đến vị trí đào ${formatCoords(targetPosition)}.`
           );
-          task.status = "reached_target";
-          task.consecutivePathErrors = 0;
+          // Kiểm tra lại tầm với sau khi đến
+          if (
+            bot.entity.position.distanceTo(
+              targetPosition.offset(0.5, 0.5, 0.5)
+            ) <= REACH_BLOCK_DIST
+          ) {
+            task.status = "reached_target";
+            task.consecutivePathErrors = 0;
+          } else {
+            console.warn(
+              `[Block Logic] Pathfinder báo đến GoalBlock nhưng vẫn ngoài tầm? Thử lại moving.`
+            );
+            task.status = "moving"; // Thử lại
+            task.consecutivePathErrors++; // Tính là lỗi
+          }
           setTimeout(
             () => handleBlockCollection(bot),
             VERY_SHORT_CHECK_INTERVAL
@@ -988,10 +1128,11 @@ async function handleBlockCollection(bot) {
               targetPosition
             )}: ${err.message}.`
           );
-          bot.chat("Không đến được khối này...");
+          try {
+            bot.chat("Không đến được khối này...");
+          } catch (e) {}
           task.consecutivePathErrors++;
-          // Thử lại ở lần sau thay vì bỏ ngay
-          task.status = "moving";
+          task.status = "moving"; // Thử lại ở lần sau
           console.log(
             `[Block Logic] Lỗi pathfinder (${task.consecutivePathErrors}/${MAX_PATHFINDER_ERRORS}). Sẽ thử lại.`
           );
@@ -1005,6 +1146,7 @@ async function handleBlockCollection(bot) {
             targetPosition
           )}. Chuẩn bị đào.`
         );
+        // Kiểm tra lại điều kiện
         if (!canReachBlock) {
           console.warn(
             `[Block Logic] Vừa đến nơi (${task.status}) nhưng lại ngoài tầm? Quay lại 'moving'.`
@@ -1019,7 +1161,9 @@ async function handleBlockCollection(bot) {
               targetPosition
             )} lại thành quá cao? Bỏ qua.`
           );
-          bot.chat("Khối này tự nhiên cao lên à? Bỏ qua.");
+          try {
+            bot.chat("Khối này tự nhiên cao lên à? Bỏ qua.");
+          } catch (e) {}
           task.currentTarget = null;
           task.status = "idle";
           setTimeout(() => handleBlockCollection(bot), CHECK_INTERVAL);
@@ -1028,19 +1172,23 @@ async function handleBlockCollection(bot) {
 
         // <<< TRANG BỊ TOOL >>>
         let toolNeeded = task.requiredToolType !== "any";
-        let equippedCorrectTool = true; // Giả sử tool ok hoặc không cần
+        let equippedCorrectTool = true; // Giả sử ok
         if (toolNeeded) {
           if (!(await equipBestTool(bot, task.requiredToolType, true))) {
-            equippedCorrectTool = false; // Không tìm thấy/trang bị được
+            // Cho phép cấp thấp/tay không
+            equippedCorrectTool = false;
             console.warn(
-              `[Block Logic] Không tìm/trang bị được tool '${task.requiredToolType}'.`
+              `[Block Logic] Không tìm/trang bị được tool '${task.requiredToolType}'. Sẽ thử đào bằng tool hiện tại.`
             );
-            // Sẽ kiểm tra canDigBlock ở dưới
           } else {
             console.log(
-              `[Block Logic] Đã trang bị tool phù hợp (${bot.heldItem?.name}).`
+              `[Block Logic] Đã trang bị tool phù hợp (${
+                bot.heldItem?.name || "tay không"
+              }).`
             );
           }
+        } else {
+          console.debug(`[Block Logic] Không yêu cầu tool cụ thể (any).`);
         }
 
         // Kiểm tra lại block và khả năng đào
@@ -1056,9 +1204,58 @@ async function handleBlockCollection(bot) {
           setTimeout(() => handleBlockCollection(bot), SHORT_CHECK_INTERVAL);
           return;
         }
+
+        // Xử lý khối rơi phía trên (nếu có) - Logic này có thể cần hàm digBlockIfNotAir
+        const blockAbove = bot.blockAt(targetPosition.offset(0, 1, 0));
+        const fallingBlocks = ["sand", "red_sand", "gravel", "concrete_powder"];
+        if (blockAbove && fallingBlocks.includes(blockAbove.name)) {
+          console.log(
+            `[Block Logic] Phát hiện khối rơi (${blockAbove.name}) phía trên. Đào khối trên trước.`
+          );
+          try {
+            // Cần đảm bảo có thể với tới khối trên
+            if (
+              bot.entity.position.distanceTo(
+                blockAbove.position.offset(0.5, 0.5, 0.5)
+              ) <= REACH_BLOCK_DIST
+            ) {
+              // Gọi hàm đào an toàn (nếu có) hoặc bot.dig trực tiếp
+              await bot.dig(blockAbove); // Giả sử đào được
+              console.debug(
+                "[Block Logic] Đào xong khối rơi. Chờ ổn định và kiểm tra lại khối mục tiêu."
+              );
+              await bot.waitForTicks(10); // Chờ khối rơi (nếu có)
+              // Gọi lại handleBlockCollection để kiểm tra lại khối mục tiêu ở lần tick sau
+              task.status = "reached_target"; // Giữ nguyên trạng thái để kiểm tra lại
+              setTimeout(
+                () => handleBlockCollection(bot),
+                SHORT_CHECK_INTERVAL
+              );
+              return; // Quay lại từ đầu chu kỳ xử lý
+            } else {
+              console.warn(
+                "[Block Logic] Không với tới khối rơi phía trên. Bỏ qua mục tiêu."
+              );
+              task.currentTarget = null;
+              task.status = "idle";
+              setTimeout(() => handleBlockCollection(bot), CHECK_INTERVAL);
+              return;
+            }
+          } catch (digAboveError) {
+            console.error(
+              `[Block Logic] Lỗi khi đào khối rơi phía trên: ${digAboveError.message}. Bỏ qua mục tiêu.`
+            );
+            task.currentTarget = null;
+            task.status = "idle";
+            setTimeout(() => handleBlockCollection(bot), CHECK_INTERVAL);
+            return;
+          }
+        }
+
+        // Kiểm tra lại khả năng đào khối mục tiêu
         if (!bot.canDigBlock(blockToDig)) {
-          if (!equippedCorrectTool && isToolNeededForDrop(blockToDig)) {
-            // Không trang bị được tool và tool là bắt buộc -> dừng
+          const toolRequiredForDrop = isToolNeededForDrop(blockToDig); // Hàm này cần được định nghĩa
+          if (!equippedCorrectTool && toolRequiredForDrop) {
             console.error(
               `[Block Logic] Không có tool bắt buộc '${task.requiredToolType}' và không thể đào ${blockToDig.name}.`
             );
@@ -1069,25 +1266,25 @@ async function handleBlockCollection(bot) {
             );
             return;
           } else {
-            // Hoặc đã trang bị đúng nhưng vẫn ko đào đc (lỗi lạ), hoặc tool ko bắt buộc nhưng vẫn ko đào đc -> dừng
             console.error(
-              `[Block Logic] Vẫn KHÔNG THỂ ĐÀO ${blockToDig.name} dù đã (thử) trang bị ${bot.heldItem?.name}. Bỏ qua khối.`
+              `[Block Logic] Vẫn KHÔNG THỂ ĐÀO ${blockToDig.name} bằng ${
+                bot.heldItem?.name || "tay"
+              } (canDigBlock=false)? Bỏ qua khối.`
             );
-            finishCollectingTask(
-              bot,
-              false,
-              `Không thể đào ${task.itemNameVi}, có thể do quyền hoặc lỗi server.`
-            );
+            // Không dừng task hoàn toàn, chỉ bỏ qua khối này
+            task.currentTarget = null;
+            task.status = "idle";
+            setTimeout(() => handleBlockCollection(bot), CHECK_INTERVAL);
             return;
           }
         }
 
         // Mọi thứ ổn -> Đào
-        task.status = "collecting";
+        task.status = "collecting"; // Đổi tên từ digging
         console.log(
           `[Block Logic] Bắt đầu đào ${task.itemId} tại ${formatCoords(
             targetPosition
-          )} bằng ${bot.heldItem?.name}.`
+          )} bằng ${bot.heldItem?.name || "tay không"}.`
         );
 
         try {
@@ -1104,7 +1301,7 @@ async function handleBlockCollection(bot) {
 
           setTimeout(
             () => handleBlockCollection(bot),
-            ITEM_PICKUP_WAIT_TICKS * 50
+            ITEM_PICKUP_WAIT_TICKS * 50 // Chờ nhặt
           );
           return;
         } catch (digError) {
@@ -1122,18 +1319,24 @@ async function handleBlockCollection(bot) {
               "[Block Logic] Block không còn tồn tại sau lỗi đào. Tìm block khác."
             );
           } else {
-            bot.chat(`Lỗi khi đào ${task.itemNameVi}: ${digError.message}`);
+            try {
+              bot.chat(`Lỗi khi đào ${task.itemNameVi}: ${digError.message}`);
+            } catch (e) {}
           }
           task.currentTarget = null;
           task.status = "idle";
           setTimeout(() => handleBlockCollection(bot), CHECK_INTERVAL);
           return;
         }
-        break;
+      // break; // Không cần break vì return
 
-      case "collecting":
-        console.warn("[Block Logic] Bị kẹt ở trạng thái 'collecting'? Chờ...");
-        setTimeout(() => handleBlockCollection(bot), CHECK_INTERVAL);
+      case "collecting": // Trạng thái cũ 'digging'
+        // Trạng thái này không nên kéo dài
+        console.warn(
+          "[Block Logic] Bị kẹt ở trạng thái 'collecting'? Đặt lại thành 'reached_target'."
+        );
+        task.status = "reached_target";
+        setTimeout(() => handleBlockCollection(bot), SHORT_CHECK_INTERVAL);
         return;
 
       case "waiting_pickup":
@@ -1149,9 +1352,11 @@ async function handleBlockCollection(bot) {
             `[Block Logic] Xác nhận nhặt được ${pickedUpCount} ${countItemName}! SL: ${amountAfterWait}`
           );
           task.currentQuantity = amountAfterWait;
-          bot.chat(
-            `+${pickedUpCount} ${task.itemNameVi}. (${amountAfterWait}/${task.targetQuantity})`
-          );
+          try {
+            bot.chat(
+              `+${pickedUpCount} ${task.itemNameVi}. (${amountAfterWait}/${task.targetQuantity})`
+            );
+          } catch (e) {}
           task.currentTarget = null; // Tìm khối mới
           task.status = "idle";
           setTimeout(
@@ -1175,9 +1380,10 @@ async function handleBlockCollection(bot) {
           ); // Chờ tiếp
           return;
         }
-        break;
+      // break; // Không cần break vì return
 
       case "idle":
+        // Nếu vòng lặp quay lại idle mà không có xử lý nào ở trên -> chờ
         console.warn(
           "[Block Logic] Lặp lại ở trạng thái 'idle'? Chờ tìm mục tiêu..."
         );
@@ -1203,18 +1409,25 @@ async function handleBlockCollection(bot) {
 }
 
 function collectionLoop(bot) {
-  if (!bot.collectingTaskDetails || !bot.isCollecting) return;
-
-  const task = bot.collectingTaskDetails;
-  if (!task) {
-    console.error("[Collect Loop] Task is null. Stopping.");
-    if (bot.isCollecting)
-      finishCollectingTask(bot, false, "Lỗi: Nhiệm vụ bị hủy.");
+  // Kiểm tra task và trạng thái trước khi chạy
+  if (!bot.collectingTaskDetails || !bot.isCollecting) {
+    // console.debug("[Collect Loop] No active collecting task or bot stopped.");
     return;
   }
 
+  const task = bot.collectingTaskDetails;
+  if (!task) {
+    // Kiểm tra task có tồn tại không
+    console.error("[Collect Loop] Task is null unexpectedly. Stopping.");
+    if (bot.isCollecting)
+      finishCollectingTask(bot, false, "Lỗi: Nhiệm vụ bị hủy đột ngột.");
+    return;
+  }
+
+  // Gọi handler tương ứng
   if (task.collectionStrategy === "tree") {
     handleTreeCollection(bot).catch((err) => {
+      // Thêm catch ở đây để bắt lỗi chưa xử lý
       console.error("!!! Lỗi chưa xử lý trong handleTreeCollection:", err);
       finishCollectingTask(
         bot,
@@ -1224,6 +1437,7 @@ function collectionLoop(bot) {
     });
   } else if (task.collectionStrategy === "block") {
     handleBlockCollection(bot).catch((err) => {
+      // Thêm catch ở đây
       console.error("!!! Lỗi chưa xử lý trong handleBlockCollection:", err);
       finishCollectingTask(
         bot,
@@ -1243,6 +1457,8 @@ function collectionLoop(bot) {
   }
 }
 
+// Hàm digBlockIfNotAir và isToolNeededForDrop giữ nguyên như phiên bản gốc
+// (Lưu ý: digBlockIfNotAir trong phiên bản gốc không có xử lý khối rơi)
 async function digBlockIfNotAir(bot, position, task = null) {
   const block = bot.blockAt(position);
   if (
@@ -1251,54 +1467,7 @@ async function digBlockIfNotAir(bot, position, task = null) {
   )
     return false;
 
-  // Xử lý khối rơi phía trên
-  const checkAbovePos = position.offset(0, 1, 0);
-  const blockAbove = bot.blockAt(checkAbovePos);
-  if (
-    blockAbove &&
-    ["sand", "gravel", "red_sand", "concrete_powder"].some((name) =>
-      blockAbove.name.includes(name)
-    )
-  ) {
-    console.log(
-      `[Dig Util] Phát hiện ${blockAbove.name} phía trên ${formatCoords(
-        checkAbovePos
-      )}. Đào trên trước.`
-    );
-    try {
-      if (
-        bot.entity.position.distanceTo(checkAbovePos.offset(0.5, 0.5, 0.5)) <=
-        REACH_BLOCK_DIST
-      ) {
-        const dugAbove = await digBlockIfNotAir(bot, checkAbovePos, task);
-        if (dugAbove) {
-          await bot.waitForTicks(5);
-          const originalBlockAgain = bot.blockAt(position);
-          if (originalBlockAgain && originalBlockAgain.name !== "air") {
-            return await digBlockIfNotAir(bot, position, task);
-          } else {
-            console.debug(
-              "[Dig Util] Khối gốc đã biến mất sau khi đào khối trên."
-            );
-            return true;
-          }
-        } else {
-          throw new Error(
-            `Không đào được ${blockAbove.name} che phía trên ${block.name}`
-          );
-        }
-      } else {
-        throw new Error(
-          `Không với tới ${blockAbove.name} che phía trên ${block.name}`
-        );
-      }
-    } catch (err) {
-      console.error(
-        `[Dig Util] Lỗi khi xử lý khối rơi phía trên: ${err.message}`
-      );
-      throw err;
-    }
-  }
+  // Phiên bản gốc không xử lý khối rơi ở đây
 
   // Kiểm tra khả năng đào
   let canDig = bot.canDigBlock(block);
@@ -1306,10 +1475,12 @@ async function digBlockIfNotAir(bot, position, task = null) {
     console.warn(
       `[Dig Util] Báo cáo không thể đào ${block.name}. Thử trang bị tool...`
     );
+    // Logic trang bị tool trong phiên bản gốc có thể khác, cần xem lại
+    // Giả sử logic trang bị tool tương tự như trên
     const toolToEquip =
       task?.requiredToolType && task.requiredToolType !== "any"
         ? task.requiredToolType
-        : getDefaultToolForBlock(block);
+        : getDefaultToolForBlock(bot, block); // Truyền bot vào
 
     if (toolToEquip !== "any") {
       console.debug(`[Dig Util] Tool đề xuất: ${toolToEquip}`);
@@ -1317,10 +1488,11 @@ async function digBlockIfNotAir(bot, position, task = null) {
         canDig = bot.canDigBlock(block);
         if (!canDig) {
           if (!isToolNeededForDrop(block)) {
+            // Cần hàm isToolNeededForDrop
             console.warn(
               `[Dig Util] Tool ${toolToEquip} không bắt buộc. Thử đào tay...`
             );
-            canDig = true; // Cho phép thử đào tay
+            canDig = true;
           } else {
             throw new Error(
               `Vẫn không đào được ${block.name} dù đã trang bị ${toolToEquip}`
@@ -1342,7 +1514,7 @@ async function digBlockIfNotAir(bot, position, task = null) {
         }
       }
     } else {
-      canDig = bot.canDigBlock(block); // Kiểm tra lại nếu tool là 'any'
+      canDig = bot.canDigBlock(block);
       if (!canDig)
         throw new Error(
           `Không thể đào ${block.name} không rõ lý do (tool 'any').`
@@ -1377,9 +1549,11 @@ function isToolNeededForDrop(block) {
   return Object.keys(block.harvestTools).length > 0;
 }
 
-function getDefaultToolForBlock(block) {
+// Sửa lại getDefaultToolForBlock để nhận bot
+function getDefaultToolForBlock(bot, block) {
+  // Thêm bot
   if (!block) return "any";
-  const mcData = require("minecraft-data")(bot.version);
+  const mcData = require("minecraft-data")(bot.version); // Sử dụng bot.version
 
   if (block.harvestTools) {
     const toolIds = Object.keys(block.harvestTools).map((id) =>
@@ -1392,7 +1566,7 @@ function getDefaultToolForBlock(block) {
         if (toolInfo.name.includes("axe")) return "axe";
         if (toolInfo.name.includes("shovel")) return "shovel";
         if (toolInfo.name.includes("hoe")) return "hoe";
-        if (toolInfo.name.includes("shear")) return "shears";
+        if (toolInfo.name.includes("shear")) return "shears"; // Sửa thành shear
       }
     }
   }
@@ -1423,7 +1597,6 @@ function getDefaultToolForBlock(block) {
   )
     return "shears";
   if (block.name.includes("wool")) return "shears";
-  // if (block.material === 'plant' && !logSuffixes.some(s=>block.name.includes(s))) return 'hoe'; // Có thể gây tranh cãi
 
   return "any";
 }
@@ -1436,10 +1609,9 @@ function finishCollectingTask(bot, success, message) {
   const task = bot.collectingTaskDetails;
   const username = task?.username || "bạn";
   const taskName = task?.itemNameVi || "vật phẩm";
-  const finalAmount = countItemManually(
-    bot.inventory,
-    task?.droppedItemId ?? -1
-  );
+  // Sửa lỗi undefined
+  const finalAmount =
+    countItemManually(bot.inventory, task?.droppedItemId ?? -1) ?? 0;
   const targetAmount = task?.targetQuantity ?? "?";
   const duration = task?.startTime
     ? ((Date.now() - task.startTime) / 1000).toFixed(1) + "s"
@@ -1455,9 +1627,20 @@ function finishCollectingTask(bot, success, message) {
   console.log(
     `[Collect Finish] Task ${username}. Success: ${success}. Message: ${finalMessage}`
   );
-  if (finalMessage) {
-    bot.chat(`${username}, ${finalMessage}`);
-  }
+  // Chỉ chat khi thành công hoặc do người dùng yêu cầu dừng (trong stopCollecting)
+  if (success && finalMessage) {
+    try {
+      bot.chat(`${username}, ${finalMessage}`);
+    } catch (e) {}
+  } else if (
+    !success &&
+    message === "Đã dừng theo yêu cầu của bạn" &&
+    finalMessage
+  ) {
+    try {
+      bot.chat(`${username}, ${finalMessage}`);
+    } catch (e) {}
+  } // Không chat các lỗi khác để tránh spam
 
   bot.isCollecting = false;
   bot.collectingTaskDetails = null;
@@ -1478,16 +1661,19 @@ function finishCollectingTask(bot, success, message) {
 function stopCollecting(bot, username) {
   if (bot.isCollecting && bot.collectingTaskDetails) {
     console.log(`[Collect Stop] User ${username} yêu cầu dừng.`);
+    // Truyền lý do cụ thể để finishCollectingTask có thể chat lại
     finishCollectingTask(bot, false, `Đã dừng theo yêu cầu của bạn`);
   } else {
     console.log(
       `[Collect Stop] User ${username} yêu cầu dừng nhưng không có task đang chạy.`
     );
-    bot.chat(`${username}, tôi đâu có đang thu thập gì đâu?`);
+    try {
+      bot.chat(`${username}, tôi đâu có đang thu thập gì đâu?`);
+    } catch (e) {}
   }
 }
 // =============================================================================
-// KHỞI ĐỘNG TASK THU THẬP
+// KHỞI ĐỘNG TASK THU THẬP (Phiên bản gốc)
 // =============================================================================
 async function startCollectingTask(bot, username, message, aiModel) {
   console.log(`[Collect Cmd] Yêu cầu từ ${username}: "${message}"`);
@@ -1502,15 +1688,19 @@ async function startCollectingTask(bot, username, message, aiModel) {
     { key: "isHunting", reason: "săn bắn" },
     { key: "isCleaningInventory", reason: "dọn túi đồ" },
     { key: "isDepositing", reason: "cất đồ" },
+    // Thêm các trạng thái bận khác nếu có
   ];
   for (const state of busyStates) {
     if (bot[state.key]) {
-      bot.chat(`${username}, tôi đang bận ${state.reason} rồi!`);
+      try {
+        bot.chat(`${username}, tôi đang bận ${state.reason} rồi!`);
+      } catch (e) {}
       console.log(`[Collect Cmd] Bị chặn do đang ${state.reason}.`);
       return;
     }
   }
 
+  // --- Trích xuất yêu cầu bằng AI ---
   const extractionPrompt = `Từ tin nhắn "${message}" của người chơi "${username}", trích xuất tên vật phẩm/khối họ muốn thu thập và số lượng. Nếu không nói số lượng, mặc định là 64. Chỉ trả lời bằng định dạng JSON với hai khóa: "itemName" (string, giữ nguyên tiếng Việt nếu có) và "quantity" (number). Ví dụ: "lấy cho tôi 32 cục đá cuội" -> {"itemName": "đá cuội", "quantity": 32}. Nếu không rõ vật phẩm hoặc số lượng, trả về {"itemName": null, "quantity": 0}. JSON:`;
   let itemNameVi = null;
   let quantity = 64;
@@ -1542,7 +1732,9 @@ async function startCollectingTask(bot, username, message, aiModel) {
           `[Collect Cmd] Fallback (No JSON): Name="${itemNameVi}", Qty=${quantity}.`
         );
       } else {
-        bot.chat(`Xin lỗi ${username}, tôi không hiểu rõ yêu cầu của bạn.`);
+        try {
+          bot.chat(`Xin lỗi ${username}, tôi không hiểu rõ yêu cầu của bạn.`);
+        } catch (e) {}
         return;
       }
     }
@@ -1557,9 +1749,11 @@ async function startCollectingTask(bot, username, message, aiModel) {
       itemNameVi.trim() === ""
     ) {
       console.error("[Collect Cmd] AI không trích xuất được tên item hợp lệ.");
-      bot.chat(
-        `Xin lỗi ${username}, tôi không rõ bạn muốn thu thập vật phẩm nào.`
-      );
+      try {
+        bot.chat(
+          `Xin lỗi ${username}, tôi không rõ bạn muốn thu thập vật phẩm nào.`
+        );
+      } catch (e) {}
       return;
     }
     if (isNaN(quantity) || quantity <= 0) {
@@ -1569,18 +1763,21 @@ async function startCollectingTask(bot, username, message, aiModel) {
       quantity = 64;
     }
     itemNameVi = itemNameVi.trim();
-    quantity = Math.max(1, Math.min(quantity, 2304));
+    quantity = Math.max(1, Math.min(quantity, 2304)); // Giới hạn số lượng
     console.log(
       `[Collect Cmd] Trích xuất AI: Tên="${itemNameVi}", Số lượng=${quantity}`
     );
   } catch (error) {
     console.error("[Collect Cmd] Lỗi trong quá trình trích xuất AI:", error);
-    bot.chat(
-      `Xin lỗi ${username}, đã xảy ra lỗi khi tôi cố gắng hiểu yêu cầu của bạn.`
-    );
+    try {
+      bot.chat(
+        `Xin lỗi ${username}, đã xảy ra lỗi khi tôi cố gắng hiểu yêu cầu của bạn.`
+      );
+    } catch (e) {}
     return;
   }
 
+  // --- Dịch tên và kiểm tra thông tin item/block ---
   let itemId;
   let itemInfo;
   let droppedItemInfo;
@@ -1590,7 +1787,11 @@ async function startCollectingTask(bot, username, message, aiModel) {
     console.debug(`[Collect Cmd] Bước 2: Dịch & Kiểm tra "${itemNameVi}"...`);
     itemId = translateToEnglishId(itemNameVi);
     if (!itemId) {
-      bot.chat(`Xin lỗi ${username}, tôi không biết vật phẩm "${itemNameVi}".`);
+      try {
+        bot.chat(
+          `Xin lỗi ${username}, tôi không biết vật phẩm "${itemNameVi}".`
+        );
+      } catch (e) {}
       return;
     }
     mcDataInstance = require("minecraft-data")(bot.version);
@@ -1624,27 +1825,37 @@ async function startCollectingTask(bot, username, message, aiModel) {
         const foodInfo = mcDataInstance.foodsByName[itemId];
         if (foodInfo) {
           if (typeof bot.startHuntingTask === "function") {
+            // Kiểm tra hàm săn có tồn tại không
             console.log(
               `[Collect Cmd] Yêu cầu "${itemNameVi}" là thức ăn -> Săn bắn.`
             );
-            bot.startHuntingTask(username, itemId, quantity, aiModel);
+            // bot.startHuntingTask(username, itemId, quantity, aiModel); // Gọi hàm săn
+            try {
+              bot.chat(`Chức năng săn ${itemNameVi} chưa được lập trình.`);
+            } catch (e) {} // Tạm thời báo chưa làm được
             return;
           } else {
-            bot.chat(
-              `Xin lỗi ${username}, "${itemNameVi}" là thức ăn nhưng tôi chưa biết đi săn.`
-            );
+            try {
+              bot.chat(
+                `Xin lỗi ${username}, "${itemNameVi}" là thức ăn nhưng tôi chưa biết đi săn.`
+              );
+            } catch (e) {}
             return;
           }
         } else {
-          bot.chat(
-            `Xin lỗi ${username}, "${itemNameVi}" là vật phẩm, tôi chỉ đào khối/chặt cây thôi.`
-          );
+          try {
+            bot.chat(
+              `Xin lỗi ${username}, "${itemNameVi}" là vật phẩm, tôi chỉ đào khối/chặt cây thôi.`
+            );
+          } catch (e) {}
           return;
         }
       } else {
-        bot.chat(
-          `Xin lỗi ${username}, không tìm thấy thông tin về "${itemNameVi}" (${itemId}).`
-        );
+        try {
+          bot.chat(
+            `Xin lỗi ${username}, không tìm thấy thông tin về "${itemNameVi}" (${itemId}).`
+          );
+        } catch (e) {}
         return;
       }
     }
@@ -1653,7 +1864,9 @@ async function startCollectingTask(bot, username, message, aiModel) {
       console.error(
         `[Collect Cmd] Lỗi: Không xác định được item drop hợp lệ (ID: ${droppedItemId}) từ "${itemNameVi}".`
       );
-      bot.chat(`Lỗi: Không xác định được vật phẩm rơi ra từ ${itemNameVi}.`);
+      try {
+        bot.chat(`Lỗi: Không xác định được vật phẩm rơi ra từ ${itemNameVi}.`);
+      } catch (e) {}
       return;
     }
     console.log(
@@ -1661,10 +1874,13 @@ async function startCollectingTask(bot, username, message, aiModel) {
     );
   } catch (error) {
     console.error("[Collect Cmd] Lỗi dịch/mcData:", error);
-    bot.chat(`Xin lỗi ${username}, lỗi tìm thông tin "${itemNameVi}".`);
+    try {
+      bot.chat(`Xin lỗi ${username}, lỗi tìm thông tin "${itemNameVi}".`);
+    } catch (e) {}
     return;
   }
 
+  // --- Xác định chiến lược và tool ---
   let collectionStrategy = "block";
   let requiredTool = "any";
 
@@ -1673,13 +1889,23 @@ async function startCollectingTask(bot, username, message, aiModel) {
     requiredTool = "axe";
   } else {
     collectionStrategy = "block";
-    requiredTool = getDefaultToolForBlock(itemInfo);
+    requiredTool = getDefaultToolForBlock(bot, itemInfo); // Truyền bot vào
   }
   console.log(
     `[Collect Cmd] Bước 3: Chiến lược: ${collectionStrategy}. Công cụ mặc định: ${requiredTool}.`
   );
 
-  const initialAmount = countItemManually(bot.inventory, droppedItemId);
+  // --- Khởi tạo Task ---
+  const initialAmount = countItemManually(bot.inventory, droppedItemId) ?? 0; // Đảm bảo là số
+  if (initialAmount >= quantity) {
+    try {
+      bot.chat(
+        `${username}, bạn đã có đủ ${initialAmount}/${quantity} ${itemNameVi} rồi.`
+      );
+    } catch (e) {}
+    return;
+  }
+
   bot.isCollecting = true;
   bot.collectingTaskDetails = {
     username: username,
@@ -1700,38 +1926,50 @@ async function startCollectingTask(bot, username, message, aiModel) {
     lastLogPosition: null,
     pickupAttempts: 0,
     amountBeforePickup: 0,
-    consecutivePathErrors: 0, // Khởi tạo bộ đếm lỗi
-    lastErrorTime: 0,
+    consecutivePathErrors: 0,
+    lastErrorTime: 0, // Có thể dùng để tránh lặp lỗi quá nhanh
   };
   console.log(
     `[Collect Cmd] Bước 4: Khởi tạo task. Đếm ${droppedItemInfo.displayName} (ID: ${droppedItemId}). Có ${initialAmount}/${quantity}.`
   );
-  bot.chat(
-    `Ok ${username}, bắt đầu ${
-      collectionStrategy === "tree" ? "chặt cây" : "đào"
-    } ${quantity} ${itemNameVi}. Hiện có ${initialAmount}.`
-  );
 
+  // Chat khi bắt đầu
+  try {
+    bot.chat(
+      `Ok ${username}, bắt đầu ${
+        collectionStrategy === "tree" ? "chặt cây" : "đào"
+      } ${quantity} ${itemNameVi}. Hiện có ${initialAmount}.`
+    );
+  } catch (e) {}
+
+  // --- Cấu hình Pathfinder và bắt đầu vòng lặp ---
   console.log("[Collect Cmd] Bước 5: Cấu hình và bắt đầu vòng lặp...");
-  const mc = require("minecraft-data")(bot.version);
-  const defaultMove = new Movements(bot, mc);
-  defaultMove.canDig = true;
-  defaultMove.allowSprinting = true;
-  defaultMove.allowParkour = true; // Cho phép parkour có thể hữu ích khi chặt cây
-  defaultMove.canPlaceBlocks = true;
-  defaultMove.placeBlockRange = 3;
-  defaultMove.digCost = 10;
-  defaultMove.maxDropDown = 5;
+  try {
+    const mc = require("minecraft-data")(bot.version);
+    const defaultMove = new Movements(bot, mc);
+    defaultMove.canDig = true;
+    defaultMove.allowSprinting = true;
+    defaultMove.allowParkour = true;
+    defaultMove.canPlaceBlocks = true; // Cho phép đặt khối (quan trọng cho bắc cầu nếu cần sau này)
+    defaultMove.placeBlockRange = 3;
+    defaultMove.digCost = 1; // Giảm chi phí đào để khuyến khích vượt chướng ngại vật
+    defaultMove.maxDropDown = 5;
+    defaultMove.scaffoldBlockNames = [...scaffoldBlockNames];
+    console.log(
+      "[Movements Setup] Using scaffold blocks:",
+      defaultMove.scaffoldBlockNames.join(", ")
+    );
+    bot.pathfinder.setMovements(defaultMove);
+  } catch (moveError) {
+    console.error(
+      "[Collect Cmd] Lỗi cấu hình Movements/Pathfinder:",
+      moveError
+    );
+    finishCollectingTask(bot, false, "Lỗi cấu hình di chuyển.");
+    return;
+  }
 
-  // Thêm các khối bắc cầu vào danh sách cho phép
-  defaultMove.scaffoldBlockNames = [...scaffoldBlockNames]; // Sử dụng danh sách đã định nghĩa ở trên
-  console.log(
-    "[Movements Setup] Using scaffold blocks:",
-    defaultMove.scaffoldBlockNames.join(", ")
-  );
-
-  bot.pathfinder.setMovements(defaultMove);
-
+  // Bắt đầu vòng lặp chính
   collectionLoop(bot);
 }
 

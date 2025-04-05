@@ -88,6 +88,10 @@ function stopFollowing(bot, username) {
       if (bot.pathfinder) {
         bot.pathfinder.stop();
         console.log(`[StopFollow Cmd] Đã gọi bot.pathfinder.stop().`);
+          // <<< THÊM DÒNG NÀY >>>
+          bot.pathfinder.setGoal(null); // Xóa mục tiêu một cách tường minh
+          console.log(`[StopFollow Cmd] Đã gọi bot.pathfinder.setGoal(null).`);
+          // <<< KẾT THÚC THÊM >>>
       } else {
         console.log("[StopFollow Cmd] bot.pathfinder không tồn tại.");
       }
