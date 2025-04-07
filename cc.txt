@@ -1,650 +1,570 @@
-// --- START OF FILE bot.js ---
+// --- START OF FILE commands/craft.js ---
+const { GoalBlock, GoalNear } = require("mineflayer-pathfinder").goals;
+const { Vec3 } = require("vec3");
+// *** SỬ DỤNG LẠI TÊN HÀM GỐC CỦA BẠN ***
+const { translateToEnglishId, formatCoords } = require("../utils");
+const { sleep } = require('../utils'); // Giả sử có hàm sleep
 
-require("dotenv").config();
-const mineflayer = require("mineflayer");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const { pathfinder, Movements, goals } = require("mineflayer-pathfinder");
-const mcData = require("minecraft-data");
+const CRAFTING_TABLE_ID_NAME = 'crafting_table';
+const MAX_CRAFT_SEARCH_DIST = 32;
+const PLANK_TAG = 'minecraft:planks';
 
-// Import các module lệnh
-const cleanInventoryCommands = require("./commands/clean_inventory");
-const followCommands = require("./commands/follow");
-const coordsCommands = require("./commands/coords");
-const chatCommands = require("./commands/chat");
-const findCommands = require("./commands/find");
-const inventoryCommands = require("./commands/inventory");
-const protectCommands = require("./commands/protect");
-const collectCommands = require("./commands/collect");
-const navigateCommands = require("./commands/navigate");
-const scanCommands = require("./commands/scan");
-const farmCommands = require("./commands/farm");
-const craftCommands = require("./commands/craft");
-const infoCommands = require("./commands/info");
-const sleepCommands = require("./commands/sleep");
-const stripMineCommands = require("./commands/strip_mine");
-const huntCommands = require("./commands/hunt");
-const depositCommands = require("./commands/deposit");
-const equipCommands = require("./commands/equip_item");
-const eventNotifierCommands = require("./event_notifier");
-const autoEatCommands = require("./auto_eat");
-const { flattenArea, stopFlatten } = require('./commands/flatten_area');
-// ***** THÊM IMPORT *****
-const homeCommands = require("./commands/home"); // Import module xây nhà
-// **********************
-
-const { roundCoord, formatCoords } = require("./utils");
-
-// --- Cấu hình ---
-const SERVER_ADDRESS = "dhhnedhhne.aternos.me";
-const SERVER_PORT = 21691;
-const BOT_USERNAME = "TuiKhongVui";
-// ***** ĐẢM BẢO PHIÊN BẢN ĐÚNG *****
-const MINECRAFT_VERSION = "1.21.4"; // Hoặc phiên bản bé đang dùng
-// *********************************
-
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-if (!GEMINI_API_KEY) {
-  console.error("LỖI: Không tìm thấy GEMINI_API_KEY trong file .env!");
-  process.exit(1);
-}
-
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-// ***** CÓ THỂ DÙNG GEMINI FLASH CHO NHANH *****
-const aiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" }); // Thử dùng flash
-// ******************************************
-
-console.log(`Đang kết nối tới ${SERVER_ADDRESS}:${SERVER_PORT}...`);
-console.log(`Tên bot: ${BOT_USERNAME}, Phiên bản: ${MINECRAFT_VERSION}`);
-
-// --- Khởi tạo Bot ---
-const bot = mineflayer.createBot({
-  host: SERVER_ADDRESS,
-  port: SERVER_PORT,
-  username: BOT_USERNAME,
-  version: MINECRAFT_VERSION,
-  hideErrors: false,
-  checkTimeoutInterval: 60 * 1000,
-  // auth: 'microsoft' // Bỏ comment dòng này nếu dùng tài khoản Microsoft
-});
-
-bot.loadPlugin(pathfinder);
-console.log("Đã tạo bot. Bắt đầu kết nối...");
-
-// --- Khởi tạo Trạng thái Bot ---
-bot.botInGameName = BOT_USERNAME;
-bot.defaultMove = null;
-bot.followingTarget = null;
-bot.isFollowing = false;
-bot.isFinding = false;
-bot.findingTaskDetails = null;
-bot.isProtecting = false;
-bot.protectingTarget = null;
-bot.protectionInterval = null;
-bot.isCollecting = false;
-bot.collectingTaskDetails = null;
-bot.isStripMining = false;
-bot.stripMineTaskDetails = null;
-bot.isHunting = false;
-bot.huntTaskDetails = null;
-bot.isCleaningInventory = false;
-bot.cleaningTaskDetails = null;
-bot.isDepositing = false;
-bot.depositTaskDetails = null;
-bot.isSleeping = false;
-bot.isFlattening = false;
-bot.flattenStopRequested = false;
-bot.flattenTemporaryChests = [];
-// ***** THÊM TRẠNG THÁI XÂY DỰNG *****
-bot.isBuilding = false;
-bot.buildingTaskDetails = null; // Có thể dùng để lưu tiến độ sau này
-// ***********************************
-bot.waypoints = {};
-bot.autoEatInterval = null;
-// ***** THÊM TRẠNG THÁI CẢI TIẾN *****
-bot.stuckDetectionInterval = null; // Interval để kiểm tra kẹt
-bot.badZones = {}; // Lưu trữ các vùng có vấn đề (cần logic xử lý thêm)
-// *************************************
-
-// --- Hàm Dừng Tất Cả Nhiệm Vụ ---
-function stopAllTasks(bot, usernameOrReason) {
-  let stoppedSomething = false;
-  const reasonText =
-    typeof usernameOrReason === "string" ? usernameOrReason : "Unknown Reason";
-  console.log(`[Stop All] Received stop request. Reason: ${reasonText}`);
-
-  // Các logic dừng task giữ nguyên như code gốc của bạn
-  if (bot.isFlattening) {
-    console.log("[Stop All] Stopping flatten task...");
-    stopFlatten(bot, usernameOrReason);
-    bot.isFlattening = false;
-    bot.flattenStopRequested = false;
-    stoppedSomething = true;
-  }
-  if (bot.isFinding) {
-    findCommands.stopFinding(bot, reasonText);
-    stoppedSomething = true;
-  }
-  if (bot.isFollowing) {
-    followCommands.stopFollowing(bot, reasonText);
-    stoppedSomething = true;
-  }
-  if (bot.isProtecting) {
-    protectCommands.stopProtecting(bot, reasonText);
-    stoppedSomething = true;
-  }
-  if (bot.isCollecting) {
-    collectCommands.stopCollecting(bot, reasonText);
-    stoppedSomething = true;
-  }
-  if (bot.isCleaningInventory) {
-    cleanInventoryCommands.stopCleaningInventory(bot, reasonText);
-    stoppedSomething = true;
-  }
-  if (bot.isStripMining) {
-    stripMineCommands.stopStripMining(bot, reasonText);
-    stoppedSomething = true;
-  }
-  if (bot.isHunting) {
-    huntCommands.stopHunting(bot, reasonText);
-    stoppedSomething = true;
-  }
-  if (bot.isDepositing) {
-    depositCommands.stopDepositTask(bot, reasonText);
-    stoppedSomething = true;
-  }
-  if (bot.isBuilding) {
-    console.log("[Stop All] Stopping building task (setting flag).");
-    bot.isBuilding = false;
-    bot.buildingTaskDetails = null;
-    stoppedSomething = true;
-  }
-  if (bot.isSleeping) {
+// --- Hàm tìm bàn chế tạo gần đó (GIỮ NGUYÊN) ---
+async function findNearbyCraftingTable(bot, mcData) {
+    const tableBlockData = mcData.blocksByName[CRAFTING_TABLE_ID_NAME];
+    if (!tableBlockData) {
+        console.error("[Craft FindTable] Không tìm thấy dữ liệu block cho crafting_table!");
+        return null;
+    }
+    console.log(`[Craft FindTable] Tìm bàn chế tạo gần đó (ID: ${tableBlockData.id}, Tối đa: ${MAX_CRAFT_SEARCH_DIST} blocks)...`);
     try {
-      bot.wake();
-      console.log("[Stop All] Woke up bot.");
-      stoppedSomething = true;
-    } catch (e) {
-      console.error("[Stop All] Error waking up bot:", e.message);
-    }
-    bot.isSleeping = false;
-  }
+        const foundTables = await bot.findBlocks({
+            matching: tableBlockData.id,
+            maxDistance: MAX_CRAFT_SEARCH_DIST,
+            count: 5
+        });
 
-  if (bot.pathfinder?.isMoving()) {
-    try {
-      bot.pathfinder.stop();
-      console.log("[Stop All] Explicitly stopped pathfinder.");
-    } catch (e) {
-      console.error("[Stop All] Error stopping pathfinder:", e.message);
-    }
-  }
-
-  try {
-    bot.stopDigging();
-  } catch (e) { /* Ignore */ }
-  bot.clearControlStates();
-
-  // ***** SỬA ĐỔI THÔNG BÁO KẾT QUẢ *****
-  const silentReasons = [ // Các lý do không cần bot chat trả lời "Ok dừng" hoặc "Không làm gì"
-      "Hệ thống",
-      "Lỗi hệ thống",
-      "Bot chết",
-      "Bị kick",
-      "Mất kết nối",
-      "Bị kẹt" // Thêm lý do bị kẹt vào đây
-  ];
-  const userInitiatedStop = typeof usernameOrReason === 'string' && !silentReasons.includes(usernameOrReason) && !usernameOrReason.startsWith("Lỗi");
-
-  if (!stoppedSomething && userInitiatedStop) {
-      // Chỉ chat nếu người dùng yêu cầu dừng và bot thực sự không làm gì
-      try { bot.chat(`Tôi không đang làm gì để dừng cả, ${usernameOrReason}.`); } catch(e){}
-  } else if (stoppedSomething && userInitiatedStop) {
-      // Chỉ chat "Ok dừng" nếu người dùng yêu cầu và bot đã dừng một việc gì đó
-      console.log(`[Stop All] Tasks stopped due to: ${usernameOrReason}.`);
-       try { bot.chat(`Ok ${usernameOrReason}, đã dừng việc đang làm.`); } catch(e){}
-  } else if (stoppedSomething) {
-      // Log các lần dừng tự động hoặc do lỗi hệ thống
-       console.log(`[Stop All] Tasks stopped due to: ${reasonText}.`);
-  }
-  // **************************************
-}
-
-// --- Sự kiện Bot Spawn ---
-bot.once("spawn", () => {
-  bot.botInGameName = bot.username;
-  console.log(`*** Bot (${bot.botInGameName}) đã vào server! ***`);
-  const startPos = bot.entity.position;
-  console.log(`Vị trí: ${formatCoords(startPos)}`);
-
-  // Reset trạng thái giữ nguyên như code gốc
-  bot.isFollowing = false;
-  bot.followingTarget = null;
-  bot.isFinding = false;
-  bot.findingTaskDetails = null;
-  bot.isProtecting = false;
-  bot.protectingTarget = null;
-  if (bot.protectionInterval) clearInterval(bot.protectionInterval);
-  bot.protectionInterval = null;
-  bot.isCollecting = false;
-  bot.collectingTaskDetails = null;
-  bot.isStripMining = false;
-  bot.stripMineTaskDetails = null;
-  bot.isCleaningInventory = false;
-  bot.cleaningTaskDetails = null;
-  bot.isHunting = false;
-  bot.huntTaskDetails = null;
-  bot.isDepositing = false;
-  bot.depositTaskDetails = null;
-  bot.isSleeping = false;
-  bot.isBuilding = false;
-  bot.buildingTaskDetails = null;
-  bot.waypoints = bot.waypoints || {};
-  bot.isFlattening = false;
-  bot.flattenStopRequested = false;
-  bot.flattenTemporaryChests = [];
-  // ***** RESET TRẠNG THÁI CẢI TIẾN *****
-  if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval); // Xóa interval cũ nếu có
-  bot.stuckDetectionInterval = null;
-  bot.badZones = {}; // Reset vùng nguy hiểm khi spawn
-  // ************************************
-
-  // --- Cấu hình Pathfinder & Movements ---
-  try {
-    const currentMcData = mcData(bot.version);
-    if (!currentMcData) throw new Error("Không thể tải mcData cho phiên bản này!");
-
-    // ***** CẢI TIẾN: TĂNG TIMEOUT PATHFINDER *****
-    if (bot.pathfinder) {
-        bot.pathfinder.thinkTimeout = 10000; // Tăng thời gian tính toán lên 10 giây
-        console.log(`[Pathfinder Config] Set thinkTimeout to ${bot.pathfinder.thinkTimeout}ms.`);
-    } else {
-         console.warn("[Pathfinder Config] bot.pathfinder not available at spawn time for setting thinkTimeout.");
-    }
-    // ******************************************
-
-    bot.defaultMove = new Movements(bot, currentMcData);
-    console.log("[Movements Config] Applying custom settings...");
-    bot.defaultMove.allowSprinting = true;
-    console.log(`  - allowSprinting: ${bot.defaultMove.allowSprinting}`);
-    // ***** CẢI TIẾN: BẬT LẠI PARKOUR *****
-    bot.defaultMove.allowParkour = true; // Bật lại Parkour
-    console.log(`  - allowParkour: ${bot.defaultMove.allowParkour}`); // Cập nhật log
-    // *************************************
-    bot.defaultMove.canDig = true;
-    console.log(`  - canDig: ${bot.defaultMove.canDig}`);
-    bot.defaultMove.maxDropDown = 4;
-    console.log(`  - maxDropDown: ${bot.defaultMove.maxDropDown}`);
-    bot.defaultMove.allow1by1towers = true;
-    console.log(`  - allow1by1towers: ${bot.defaultMove.allow1by1towers}`);
-    bot.defaultMove.canPlace = true;
-    console.log(`  - canPlace: ${bot.defaultMove.canPlace}`);
-
-    // Các cấu hình blocksToPlace, blocksToAvoid, blocksCantBreak giữ nguyên như code gốc
-    if (!bot.defaultMove.blocksToPlace) {
-      console.warn("[Movements Config] bot.defaultMove.blocksToPlace was not initialized. Creating a new Set.");
-      bot.defaultMove.blocksToPlace = new Set();
-    }
-    const scaffoldBlocks = ["dirt", "cobblestone", "netherrack", "cobbled_deepslate", "stone", "oak_planks", "spruce_planks", "birch_planks"];
-    scaffoldBlocks.forEach((name) => {
-      const block = currentMcData.blocksByName[name];
-      if (block) {
-        bot.defaultMove.blocksToPlace.add(block.id);
-        console.log(`  - Added scaffold block: ${name} (ID: ${block.id})`);
-      } else {
-        console.warn(`  - Cannot find scaffold block: ${name}`);
-      }
-    });
-
-    const blocksToAvoidNames = ["lava", "fire", "cactus", "sweet_berry_bush", "powder_snow", "magma_block"];
-    if (!bot.defaultMove.blocksToAvoid) {
-      bot.defaultMove.blocksToAvoid = new Set();
-    }
-    blocksToAvoidNames.forEach((name) => {
-      const block = currentMcData.blocksByName[name];
-      if (block) bot.defaultMove.blocksToAvoid.add(block.id);
-    });
-    console.log(`  - Blocks to avoid IDs: ${[...bot.defaultMove.blocksToAvoid].join(", ")}`);
-
-    const blocksCantBreakNames = ["chest", "ender_chest", "furnace", "blast_furnace", "smoker", "crafting_table", "enchanting_table", "anvil", "beacon", "bed", "respawn_anchor"];
-    if (!bot.defaultMove.blocksCantBreak) {
-      bot.defaultMove.blocksCantBreak = new Set();
-    }
-    blocksCantBreakNames.forEach((name) => {
-      const block = currentMcData.blocksByName[name];
-      if (block) bot.defaultMove.blocksCantBreak.add(block.id);
-    });
-    console.log(`  - Blocks cant break IDs: ${[...bot.defaultMove.blocksCantBreak].join(", ")}`);
-
-    if (bot.pathfinder) {
-      bot.pathfinder.setMovements(bot.defaultMove);
-      // Cập nhật log để phản ánh thay đổi
-      console.log("[Pathfinder] Đã khởi tạo và thiết lập Movements (parkour: true, thinkTimeout: 10s).");
-    } else {
-      console.error("[Lỗi Khởi tạo Pathfinder] bot.pathfinder không tồn tại!");
-    }
-  } catch (err) {
-    console.error("[Lỗi Khởi tạo Pathfinder/Movements]:", err);
-  }
-
-  // ***** CẢI TIẾN: THÊM LOGIC PHÁT HIỆN KẸT *****
-  let lastPosStuckCheck = null;
-  let stuckCounter = 0;
-  const STUCK_THRESHOLD = 0.08; // Ngưỡng di chuyển tối thiểu (có thể tinh chỉnh)
-  const STUCK_TIMEOUT_COUNT = 12; // Số lần kiểm tra liên tiếp không di chuyển (12 * 500ms = 6 giây)
-
-  bot.stuckDetectionInterval = setInterval(() => {
-      // Chỉ kiểm tra nếu bot đang cố gắng di chuyển theo pathfinder
-      if (bot.pathfinder && bot.pathfinder.isMoving() && bot.entity?.position) {
-          const currentPos = bot.entity.position;
-          if (lastPosStuckCheck && currentPos.distanceTo(lastPosStuckCheck) < STUCK_THRESHOLD) {
-              stuckCounter++;
-              if (stuckCounter >= STUCK_TIMEOUT_COUNT) {
-                  console.warn(`[Stuck Detector] Bot có vẻ bị kẹt tại ${formatCoords(currentPos)}! Đang dừng nhiệm vụ hiện tại.`);
-                   try { bot.chat("Ối, hình như tôi bị kẹt rồi! Đang dừng lại."); } catch(e){}
-                  stopAllTasks(bot, "Bị kẹt"); // Dừng tất cả nhiệm vụ với lý do "Bị kẹt"
-                  stuckCounter = 0; // Reset bộ đếm
-                  lastPosStuckCheck = null; // Reset vị trí để tránh bị trigger lại ngay lập tức
-              }
-          } else {
-              // Nếu bot di chuyển đủ xa, reset bộ đếm
-              stuckCounter = 0;
-          }
-          // Cập nhật vị trí cuối cùng để so sánh lần sau
-          lastPosStuckCheck = currentPos.clone();
-      } else {
-          // Nếu bot không di chuyển theo pathfinder, reset bộ đếm và vị trí
-          stuckCounter = 0;
-          lastPosStuckCheck = null;
-      }
-  }, 500); // Kiểm tra mỗi nửa giây
-  console.log(`[System] Đã kích hoạt kiểm tra kẹt di chuyển (Threshold: ${STUCK_THRESHOLD}, Timeout: ${STUCK_TIMEOUT_COUNT * 500}ms).`);
-  // ********************************************
-
-  // Khởi tạo các module khác giữ nguyên
-  eventNotifierCommands.initializeEventNotifier(bot);
-  autoEatCommands.initializeAutoEat(bot);
-
-  // Chào hỏi giữ nguyên
-  setTimeout(() => {
-     try {
-        bot.chat(`Bot AI (${bot.botInGameName}) đã kết nối! Hỏi gì đi nào? :D (Gõ 'bạn làm được gì?' để xem danh sách lệnh)`);
-     } catch(e) { console.error("Error sending initial chat message:", e);}
-  }, 1500);
-
-  // --- Lắng nghe sự kiện Pathfinder (Giữ nguyên logic gốc) ---
-  const pathfinderEvents = ["goal_reached", "path_reset", "cannotFindPath", "interrupted", "goal_non_reachable"];
-  pathfinderEvents.forEach((eventName) => {
-    bot.on(eventName, (...args) => {
-      const reason = args[0]?.message || args[0] || eventName;
-      console.log(`\n[PATHFINDER EVENT] Event: ${eventName}, Reason/Args: ${reason}`);
-      console.log(`  Current State: Find=${bot.isFinding}, Follow=${bot.isFollowing}, Protect=${bot.isProtecting}, Collect=${bot.isCollecting}, Sleep=${bot.isSleeping}, Mine=${bot.isStripMining}, Hunt=${bot.isHunting}, Clean=${bot.isCleaningInventory}, Deposit=${bot.isDepositing}, Build=${bot.isBuilding}, Flatten=${bot.isFlattening}`); // Thêm state mới vào log
-
-      const isPathError = eventName === "cannotFindPath" || eventName === "goal_non_reachable" || eventName === "interrupted";
-
-      if (isPathError) {
-        console.error(`[Pathfinder Error Detected] Reason: ${reason}`);
-        // Có thể thêm logic ghi nhớ badZones ở đây nếu muốn
-        // const errorPosStr = formatCoords(bot.entity.position);
-        // bot.badZones[errorPosStr] = (bot.badZones[errorPosStr] || 0) + 1;
-        // console.log(`[Bad Zone] Recorded path error at ${errorPosStr}. Count: ${bot.badZones[errorPosStr]}`);
-
-        // Xử lý lỗi cụ thể cho từng task (giữ nguyên logic gốc của bạn)
-        if (bot.isFinding && findCommands.handleFindPathError) {
-          findCommands.handleFindPathError(bot, reason);
-        } else if (bot.isCleaningInventory && cleanInventoryCommands.finishCleaningInventory) {
-          cleanInventoryCommands.finishCleaningInventory(bot, false, `Không thể đến nơi vứt đồ: ${reason}`);
-        } else if (bot.isDepositing && depositCommands.stopDepositTask) {
-          depositCommands.stopDepositTask(bot, `Lỗi di chuyển đến rương: ${reason}`);
-        } else if (bot.isCollecting && bot.collectingTaskDetails) {
-          const targetPos = bot.collectingTaskDetails.currentTarget?.position;
-          const currentPos = bot.entity.position;
-          if (targetPos && targetPos.y > currentPos.y + 1.5) {
-            console.error(`[Collect Path Error] Không thể đến khối ${bot.collectingTaskDetails.itemNameVi} ở trên cao (${formatCoords(targetPos)}). Lý do: ${reason}. Thử tìm khối khác.`);
-            try { bot.chat(`Tôi không lên được chỗ khối ${bot.collectingTaskDetails.itemNameVi} đó, tìm khối khác vậy.`); } catch(e){}
-            bot.collectingTaskDetails.currentTarget = null;
-            bot.collectingTaskDetails.status = "idle";
-          } else {
-            console.warn(`[Collect Path Error] Lỗi di chuyển khi thu thập: ${reason}. Vòng lặp collect sẽ thử tìm khối khác.`);
-            bot.collectingTaskDetails.currentTarget = null;
-            bot.collectingTaskDetails.status = "idle";
-          }
-        } else if (bot.isStripMining && stripMineCommands.stopStripMining) { // Sử dụng hàm stop như một handler tạm thời
-          stripMineCommands.stopStripMining(bot, `Lỗi di chuyển khi đào hầm: ${reason}`);
-        } else if (bot.isHunting && huntCommands.stopHunting) { // Sử dụng hàm stop như một handler tạm thời
-          huntCommands.stopHunting(bot, `Lỗi di chuyển khi săn bắn: ${reason}`);
-        } else if (bot.isBuilding && homeCommands.handleBuildPathError) { // Giả sử home.js có hàm xử lý lỗi path
-             homeCommands.handleBuildPathError(bot, reason);
-        } else if (bot.isFlattening /* && flattenCommands.handleFlattenPathError */) { // Giả sử flatten.js có hàm xử lý lỗi path (hoặc dùng stopFlatten)
-             console.warn(`[Flatten Path Error] Lỗi di chuyển khi làm phẳng: ${reason}. Dừng làm phẳng.`);
-             stopFlatten(bot, `Lỗi di chuyển: ${reason}`); // Gọi hàm dừng chuyên dụng
-        } else if (bot.pathfinder?.isMoving()) { // Lỗi khi di chuyển tự do (ví dụ goto)
-          console.warn(`[Pathfinder Error] Lỗi khi đang di chuyển tự do: ${reason}. Dừng di chuyển.`);
-          stopAllTasks(bot, `Lỗi di chuyển: ${reason}`);
+        if (foundTables.length > 0) {
+            foundTables.sort((a, b) => bot.entity.position.distanceTo(a) - bot.entity.position.distanceTo(b));
+            const closestTablePos = foundTables[0];
+            const tableBlock = bot.blockAt(closestTablePos);
+            if (tableBlock) {
+                console.log(`[Craft FindTable] Tìm thấy bàn chế tạo gần nhất tại ${formatCoords(tableBlock.position)}`);
+                return tableBlock;
+            } else {
+                console.warn(`[Craft FindTable] Tìm thấy vị trí ${formatCoords(closestTablePos)} nhưng không lấy được block?`);
+                return null;
+            }
+        } else {
+            console.log("[Craft FindTable] Không tìm thấy bàn chế tạo nào gần đó.");
+            return null;
         }
-      }
-
-      // Xử lý goal_reached cho task finding (giữ nguyên)
-      if (bot.isFinding && eventName === "goal_reached" && findCommands.handleFindGoalReached) {
-        findCommands.handleFindGoalReached(bot);
-      }
-      // Có thể thêm các handler goal_reached cho các task khác ở đây
-    });
-  });
-
-  // --- Các sự kiện Bot khác (Giữ nguyên) ---
-  bot.on("sleep", () => { console.log("[Event] Bot đã ngủ thành công."); bot.isSleeping = true; try{ bot.chat("Khò khò... Zzzz"); } catch(e){} });
-  bot.on("wake", () => { console.log("[Event] Bot đã thức dậy."); bot.isSleeping = false; });
-  bot.on("death", () => { console.error("!!! BOT ĐÃ CHẾT !!!"); try{ bot.chat("Ối! Tôi chết mất rồi... :("); } catch(e){} stopAllTasks(bot, "Bot chết"); });
-  bot.on("health", () => { /* Có thể log máu/đói */ });
-});
-
-// --- Xử lý Tin nhắn Chat ---
-bot.on("chat", async (username, message) => {
-  if (username === bot.username || !message) return;
-
-  const trimmedMessage = message.trim();
-  const lowerMessage = trimmedMessage.toLowerCase();
-  console.log(`[Chat In] <${username}> ${trimmedMessage}`);
-  if (!trimmedMessage) return;
-
-  // --- Kiểm tra lệnh dừng (Giữ nguyên) ---
-  const isBusy = bot.isFinding || bot.isFollowing || bot.isProtecting || bot.isCollecting || bot.isSleeping || bot.isStripMining || bot.isHunting || bot.isCleaningInventory || bot.isDepositing || bot.isBuilding || bot.isFlattening;
-  const stopKeywords = ["dừng", "stop", "hủy", "cancel", "thôi", "dừng lại", "dậy đi", "ngừng"];
-  // Cho phép dừng cả khi đang di chuyển tự do (không có task cụ thể)
-  if ((isBusy || bot.pathfinder?.isMoving()) && stopKeywords.some((k) => lowerMessage.includes(k))) {
-    console.log(`[Manual Stop] User ${username} requested stop/wake.`);
-    stopAllTasks(bot, username);
-    return;
-  }
-
-  // --- Xử lý xác nhận cho lệnh Find (Giữ nguyên) ---
-  if (bot.isFinding && bot.findingTaskDetails?.waitingForConfirmation && username === bot.findingTaskDetails.username) {
-    const confirmKeywords = ["tiếp", "ok", "oke", "có", "yes", "uh", "ừ", "di", "đi", "continue", "proceed", "tìm tiếp"];
-    const cancelKeywords = ["dừng", "thôi", "hủy", "stop", "cancel", "ko", "không", "no", "khong", "đủ rồi"];
-    let confirmed = confirmKeywords.some((k) => lowerMessage.includes(k));
-    let cancelled = !confirmed && cancelKeywords.some((k) => lowerMessage.includes(k));
-    if (confirmed) {
-      findCommands.proceedToNextTarget(bot);
-    } else if (cancelled) {
-      stopAllTasks(bot, username);
-    } else {
-       try { bot.chat(`${username}, nói 'tiếp' để đi tiếp hoặc 'dừng' để hủy nhé.`); } catch(e){}
+    } catch (err) {
+        console.error("[Craft FindTable] Lỗi khi tìm kiếm block:", err);
+        return null;
     }
-    return;
-  }
+}
 
-  // --- Phân loại ý định và thực thi lệnh ---
-  try {
-    // ***** GIỮ NGUYÊN PROMPT AI ĐẦY ĐỦ *****
-    const classificationPrompt = `**Nhiệm vụ:** Phân loại ý định chính trong tin nhắn của người chơi gửi cho bot Minecraft.
-
-    **Ngữ cảnh:**
-    *   Người gửi: "${username}"
-    *   Người nhận (Bot): "${bot.botInGameName}"
-    *   Tin nhắn gốc: "${trimmedMessage}"
-
-    **Yêu cầu:**
-    Chọn MỘT loại ý định phù hợp NHẤT từ danh sách dưới đây cho tin nhắn trên.
-
-    **Danh sách các loại ý định:**
-    *   GET_BOT_COORDS: Hỏi tọa độ hiện tại của bot.
-    *   GET_ENTITY_COORDS: Hỏi tọa độ của một thực thể (người chơi khác, mob, vật phẩm...).
-    *   FOLLOW_PLAYER: Yêu cầu bot đi theo người chơi.
-    *   FIND_BLOCK: Yêu cầu bot tìm một loại block cụ thể gần đó.
-    *   CHECK_INVENTORY: Yêu cầu bot liệt kê những gì nó có trong túi đồ.
-    *   GIVE_ITEM: Yêu cầu bot đưa một vật phẩm cho người chơi.
-    *   PROTECT_PLAYER: Yêu cầu bot bảo vệ người chơi khỏi nguy hiểm (đánh mob).
-    *   COLLECT_BLOCK: Yêu cầu bot thu thập (đào/chặt) một số lượng block nhất định.
-    *   GOTO_COORDS: Yêu cầu bot đi đến một tọa độ cụ thể.
-    *   SCAN_ORES: Yêu cầu bot quét tìm các loại quặng xung quanh.
-    *   SAVE_WAYPOINT: Yêu cầu bot lưu tọa độ hiện tại với một cái tên (waypoint).
-    *   GOTO_WAYPOINT: Yêu cầu bot đi đến một waypoint đã lưu.
-   *   FLATTEN_AREA: Yêu cầu bot làm phẳng một khu vực.
-    *   LIST_WAYPOINTS: Yêu cầu bot liệt kê các waypoint đã lưu.
-    *   DELETE_WAYPOINT: Yêu cầu bot xóa một waypoint đã lưu.
-    *   BREED_ANIMALS: Yêu cầu bot cho các con vật gần đó giao phối.
-    *   CRAFT_ITEM: Yêu cầu bot chế tạo một vật phẩm.
-    *   GO_TO_SLEEP: Yêu cầu bot tìm giường và đi ngủ.
-    *   STRIP_MINE: Yêu cầu bot đào hang, hầm.
-    *   HUNT_MOB: Yêu cầu bot đi săn một loại mob cụ thể.
-    *   BUILD_HOUSE: Yêu cầu bot xây nhà.
-    *   CLEAN_INVENTORY: Yêu cầu bot dọn dẹp túi đồ (vứt bỏ vật phẩm không cần thiết).
-    *   DEPOSIT_ITEMS: Yêu cầu bot cất giữ vật phẩm vào một nơi chứa đồ (ví dụ: rương).
-    *   EQUIP_ITEM: Yêu cầu bot trang bị/cầm một vật phẩm (vũ khí, công cụ, giáp, khiên...).
-    *   LIST_CAPABILITIES: Hỏi bot về những gì nó có thể làm, các lệnh hỗ trợ.
-    *   STOP_TASK: Yêu cầu bot dừng hành động đang làm.
-    *   GENERAL_CHAT: Tin nhắn trò chuyện thông thường, không phải lệnh cụ thể.
-    *   IGNORE: Tin nhắn không rõ nghĩa, không liên quan hoặc yêu cầu bot không làm gì.
-
-    **Phân loại cho tin nhắn sau:**
-    "${trimmedMessage}"
-
-    **Loại ý định là:**`; // Để trống cho AI điền vào
-    // *************************************
-
-    console.log(`[AI Intent] Gửi prompt phân loại...`);
-    const intentResult = await aiModel.generateContent(classificationPrompt);
-    const intentClassification = (await intentResult.response.text()).trim().toUpperCase().replace(/[^A-Z_]/g, "");
-    console.log(`[AI Intent] Phân loại: "${intentClassification}" (Tin nhắn gốc: "${trimmedMessage}")`);
-
-    // --- Kiểm tra nếu bot đang bận (Giữ nguyên) ---
-    const nonBlockingIntents = ["GET_BOT_COORDS", "GET_ENTITY_COORDS", "CHECK_INVENTORY", "SCAN_ORES", "LIST_WAYPOINTS", "LIST_CAPABILITIES", "GENERAL_CHAT", "IGNORE", "STOP_TASK"];
-    if (isBusy && !nonBlockingIntents.includes(intentClassification)) {
-      let reason = bot.isFinding ? "tìm đồ"
-                   : bot.isFollowing ? "đi theo"
-                   : bot.isProtecting ? "bảo vệ"
-                   : bot.isCollecting ? "thu thập"
-                   : bot.isSleeping ? "ngủ"
-                   : bot.isStripMining ? "đào hầm"
-                   : bot.isHunting ? "săn bắn"
-                   : bot.isCleaningInventory ? "dọn túi đồ"
-                   : bot.isDepositing ? "cất đồ"
-                   : bot.isBuilding ? "xây nhà"
-                   : bot.isFlattening ? "làm phẳng" // Thêm lý do làm phẳng
-                   : "làm việc khác";
-       try { bot.chat(`${username}, tôi đang bận ${reason} rồi! Nói 'dừng' nếu muốn tôi hủy việc đang làm.`); } catch(e){}
-      console.log(`[Action Blocked] Intent ${intentClassification} blocked because bot is busy (${reason}).`);
-      return;
-    }
-
-    // --- Thực thi lệnh (Giữ nguyên switch case) ---
-    // Lưu ý: Các logic nâng cao như kiểm tra tài nguyên, dùng xô nước/thuyền,...
-    // nên được implement bên trong các hàm của module lệnh tương ứng.
-    switch (intentClassification) {
-      case "GET_BOT_COORDS": coordsCommands.getBotCoords(bot, username); break;
-      case "GET_ENTITY_COORDS": await coordsCommands.getEntityCoords(bot, username, trimmedMessage, aiModel); break;
-      case "BUILD_HOUSE": bot.isBuilding = true; await homeCommands.startBuildHousePhase2Task(bot, username); break;
-      case "FOLLOW_PLAYER": followCommands.startFollowing(bot, username); break;
-      case "FLATTEN_AREA": await flattenArea(bot, username, trimmedMessage, aiModel); break;
-      case "FIND_BLOCK": await findCommands.startFindingTask(bot, username, trimmedMessage, aiModel); break;
-      case "CHECK_INVENTORY": inventoryCommands.checkInventory(bot, username); break;
-      case "GIVE_ITEM": await inventoryCommands.giveItem(bot, username, trimmedMessage, aiModel); break;
-      case "PROTECT_PLAYER": await protectCommands.startProtecting(bot, username); break;
-      case "COLLECT_BLOCK": await collectCommands.startCollectingTask(bot, username, trimmedMessage, aiModel); break;
-      case "GOTO_COORDS": await navigateCommands.goToCoordinates(bot, username, trimmedMessage, aiModel); break;
-      case "SCAN_ORES": await scanCommands.scanNearbyOres(bot, username); break;
-      case "SAVE_WAYPOINT": await navigateCommands.saveWaypoint(bot, username, trimmedMessage, aiModel); break;
-      case "GOTO_WAYPOINT": await navigateCommands.goToWaypoint(bot, username, trimmedMessage, aiModel); break;
-      case "LIST_WAYPOINTS": navigateCommands.listWaypoints(bot, username); break;
-      case "DELETE_WAYPOINT": await navigateCommands.deleteWaypoint(bot, username, trimmedMessage, aiModel); break;
-      case "BREED_ANIMALS": await farmCommands.breedAnimals(bot, username, trimmedMessage, aiModel); break;
-      case "CRAFT_ITEM": await craftCommands.craftItem(bot, username, trimmedMessage, aiModel); break;
-      case "GO_TO_SLEEP": await sleepCommands.goToSleep(bot, username); break;
-      case "STRIP_MINE": await stripMineCommands.startStripMiningTask(bot, username, trimmedMessage, aiModel); break;
-      case "HUNT_MOB": await huntCommands.startHuntingTask(bot, username, trimmedMessage, aiModel); break;
-      case "CLEAN_INVENTORY": await cleanInventoryCommands.startCleaningInventory(bot, username); break;
-      case "DEPOSIT_ITEMS": await depositCommands.startDepositTask(bot, username, trimmedMessage, aiModel); break;
-      case "EQUIP_ITEM": await equipCommands.startEquipItemTask(bot, username, trimmedMessage, aiModel); break;
-      case "LIST_CAPABILITIES": infoCommands.listCapabilities(bot, username); break;
-      case "STOP_TASK": console.log("[Action] Intent STOP_TASK recognized (already handled)."); break;
-      case "GENERAL_CHAT": await chatCommands.handleGeneralChat(bot, username, trimmedMessage, aiModel); break;
-      case "IGNORE": console.log(`[Action] Bỏ qua tin nhắn từ ${username} theo phân loại AI.`); break;
-      default:
-        console.warn(`[Action] Không rõ ý định từ AI: "${intentClassification}". Fallback sang General Chat.`);
-        await chatCommands.handleGeneralChat(bot, username, trimmedMessage, aiModel);
-        break;
-    }
-  } catch (error) {
-    console.error("[AI/Chat Processing] Lỗi nghiêm trọng:", error);
-    // Reset các cờ trạng thái quan trọng khi có lỗi lớn
-    bot.isBuilding = false; bot.isFinding = false; bot.isFlattening = false; // Thêm các cờ khác nếu cần
-    stopAllTasks(bot, "Lỗi hệ thống");
+// --- Hàm di chuyển đến gần block (GIỮ NGUYÊN) ---
+async function gotoBlock(bot, targetBlock, reach = 2.5) {
+    if (!targetBlock) return false;
+    const goal = new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, reach);
+    console.log(`[Craft Goto] Bắt đầu di chuyển đến gần ${targetBlock.name} tại ${formatCoords(targetBlock.position)}...`);
     try {
-       bot.chat(`Ui, đầu tôi lag quá ${username} ơi, lỗi rồi! (${error.message})`);
-    } catch (sendError) {
-      console.error("[Chat Error] Lỗi gửi tin nhắn báo lỗi:", sendError);
+        await bot.pathfinder.goto(goal);
+        console.log(`[Craft Goto] Đã đến gần ${targetBlock.name}.`);
+        return true;
+    } catch (err) {
+        console.error(`[Craft Goto] Lỗi khi di chuyển đến ${targetBlock.name}:`, err.message);
+        return false;
     }
-  }
-});
+}
 
-// --- Xử lý Lỗi và Kết thúc ---
-bot.on("error", (err) => { console.error("!!! LỖI BOT:", err); });
-bot.on("kicked", (reason) => {
-  console.error("--- Bot bị kick ---");
-  try { console.error("Lý do (JSON):", JSON.parse(reason)); } catch { console.error("Lý do:", reason); }
-  stopAllTasks(bot, "Bị kick");
-});
+// --- Hàm kiểm tra và chế tạo BCT nếu cần (GIỮ NGUYÊN) ---
+async function ensureCraftingTableInInventory(bot, mcData, username, itemNameVi) {
+    const tableItemData = mcData.itemsByName[CRAFTING_TABLE_ID_NAME];
+    if (!tableItemData) {
+        console.error("[Craft EnsureTable] Không tìm thấy dữ liệu item cho crafting_table!");
+        bot.chat(`Lỗi dữ liệu game, không tìm thấy thông tin bàn chế tạo.`);
+        return false;
+    }
+    const tableItemId = tableItemData.id;
+    console.log(`[Craft EnsureTable] Kiểm tra BCT (ID: ${tableItemId}) trong túi đồ...`);
+    let tableItem = bot.inventory.findInventoryItem(tableItemId, null);
+    if (tableItem && tableItem.count > 0) {
+        console.log(`[Craft EnsureTable] Tìm thấy ${tableItem.count} BCT trong túi đồ.`);
+        return true;
+    }
+    console.log("[Craft EnsureTable] Không có BCT trong túi đồ. Thử chế tạo...");
+    bot.chat(`${username}, tôi không có bàn chế tạo, để tôi thử làm một cái...`);
+    const plankItems = mcData.itemsArray.filter(item => item.name.endsWith('_planks'));
+    let totalPlanks = 0;
+    for (const plank of plankItems) {
+        totalPlanks += bot.inventory.count(plank.id, null);
+    }
+    console.log(`[Craft EnsureTable] Kiểm tra gỗ ván (planks): Có tổng cộng ${totalPlanks}`);
+    if (totalPlanks < 4) {
+        console.log("[Craft EnsureTable] Không đủ gỗ ván để chế tạo BCT.");
+        bot.chat(`Tôi không có đủ gỗ ván (cần 4) để làm bàn chế tạo cho ${itemNameVi}.`);
+        return false;
+    }
+    const bctRecipes = bot.recipesFor(tableItemId, null, 1, null);
+    if (!bctRecipes || bctRecipes.length === 0) {
+        console.error("[Craft EnsureTable] Không tìm thấy công thức chế tạo BCT trong bot.recipesFor!");
+        bot.chat(`Lạ thật, tôi không biết cách chế tạo bàn chế tạo?`);
+        return false;
+    }
+    const bctRecipe = bctRecipes[0];
+    console.log("[Craft EnsureTable] Tìm thấy công thức BCT. Bắt đầu chế tạo...");
+    try {
+        await bot.craft(bctRecipe, 1, null);
+        await bot.waitForTicks(10);
+        tableItem = bot.inventory.findInventoryItem(tableItemId, null);
+        if (tableItem && tableItem.count > 0) {
+            console.log("[Craft EnsureTable] Chế tạo BCT thành công!");
+            bot.chat("Tôi đã làm xong bàn chế tạo!");
+            return true;
+        } else {
+            console.error("[Craft EnsureTable] Chế tạo BCT nhưng không thấy trong túi đồ sau đó?");
+            bot.chat("Tôi đã thử làm bàn chế tạo nhưng có lỗi gì đó.");
+            return false;
+        }
+    } catch (err) {
+        console.error("[Craft EnsureTable] Lỗi khi chế tạo BCT:", err);
+        bot.chat(`Tôi gặp lỗi khi cố chế tạo bàn chế tạo: ${err.message}`);
+        return false;
+    }
+}
 
-// ***** CẢI TIẾN: DỌN DẸP INTERVAL KHI KẾT THÚC *****
-bot.on("end", (reason) => {
-  console.log("--- Kết nối bot kết thúc ---");
-  console.log("Lý do:", reason);
-  if (bot.autoEatInterval) clearInterval(bot.autoEatInterval);
-  if (bot.protectionInterval) clearInterval(bot.protectionInterval);
-  if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval); // Dọn dẹp interval kiểm tra kẹt
-  // Reset các biến interval để chắc chắn
-  bot.autoEatInterval = null;
-  bot.protectionInterval = null;
-  bot.stuckDetectionInterval = null;
-  console.log("Đã dọn dẹp interval timers.");
-});
-// *************************************************
+// --- Hàm đặt BCT (GIỮ NGUYÊN) ---
+async function placeCraftingTable(bot, mcData, username, itemNameVi) {
+    const hasTable = await ensureCraftingTableInInventory(bot, mcData, username, itemNameVi);
+    if (!hasTable) { return null; }
+    const tableItemData = mcData.itemsByName[CRAFTING_TABLE_ID_NAME];
+    const tableItem = bot.inventory.findInventoryItem(tableItemData.id, null);
+    if (!tableItem) {
+         console.error("[Craft PlaceTable] Lỗi logic: Đã đảm bảo có BCT nhưng lại không tìm thấy?");
+         bot.chat("Có lỗi xảy ra, tôi không tìm thấy bàn chế tạo vừa rồi.");
+         return null;
+    }
+    console.log(`[Craft PlaceTable] Tìm vị trí thích hợp để đặt BCT...`);
+    bot.chat(`${username}, tôi sẽ tìm chỗ để đặt bàn chế tạo xuống...`);
+    let placedTable = null;
+    const maxPlacementSearchRadius = 3;
+    const offsets = [];
+    offsets.push({dx: 0, dz: 0});
+    for (let r = 1; r <= maxPlacementSearchRadius; r++) {
+        for (let dx = -r; dx <= r; dx++) {
+            for (let dz = -r; dz <= r; dz++) {
+                 if (Math.abs(dx) === r || Math.abs(dz) === r) { offsets.push({dx, dz}); }
+            }
+        }
+    }
+    for (const offset of offsets) {
+        const checkPos = bot.entity.position.floored().offset(offset.dx, 0, offset.dz);
+        const refPos = checkPos.offset(0, -1, 0);
+        const targetPos = checkPos;
+        const referenceBlock = bot.blockAt(refPos);
+        const targetBlock = bot.blockAt(targetPos);
+        if (referenceBlock && referenceBlock.boundingBox === 'block' &&
+            targetBlock && targetBlock.type === 0 &&
+            bot.entity.position.distanceTo(targetPos.offset(0.5, 0.5, 0.5)) < 4.5) {
+            console.log(`[Craft PlaceTable] Tìm thấy vị trí hợp lệ: Đặt tại ${formatCoords(targetPos)} lên trên ${referenceBlock.name} tại ${formatCoords(refPos)}`);
+            try {
+                await bot.equip(tableItem, 'hand');
+                console.log("[Craft PlaceTable] Đã trang bị BCT.");
+                await bot.placeBlock(referenceBlock, new Vec3(0, 1, 0));
+                console.log("[Craft PlaceTable] Lệnh đặt khối đã gửi. Chờ xác nhận...");
+                await bot.waitForTicks(15);
+                const verifyBlock = bot.blockAt(targetPos);
+                if (verifyBlock && verifyBlock.name === CRAFTING_TABLE_ID_NAME) {
+                    console.log(`[Craft PlaceTable] Đặt và xác nhận BCT thành công tại ${formatCoords(targetPos)}.`);
+                    placedTable = verifyBlock;
+                    break;
+                } else {
+                    console.warn(`[Craft PlaceTable] Đã đặt nhưng không xác nhận được BCT tại ${formatCoords(targetPos)} (Thấy: ${verifyBlock?.name}). Thử vị trí khác...`);
+                }
+            } catch (err) {
+                console.error(`[Craft PlaceTable] Lỗi khi cố đặt BCT tại ${formatCoords(targetPos)}:`, err.message);
+            }
+        }
+    }
+    if (placedTable) {
+        bot.chat(`Tôi đã đặt bàn chế tạo tại ${formatCoords(placedTable.position)}.`);
+        return placedTable;
+    } else {
+        console.error("[Craft PlaceTable] Không tìm được vị trí phù hợp nào để đặt BCT.");
+        bot.chat(`Xin lỗi ${username}, tôi không tìm được chỗ nào tốt để đặt bàn chế tạo xuống.`);
+        return null;
+    }
+}
 
-// --- Xử lý Ctrl+C ---
-// ***** CẢI TIẾN: DỌN DẸP INTERVAL KHI THOÁT *****
-process.on("SIGINT", () => {
-  console.log("\nĐang ngắt kết nối bot (Ctrl+C)...");
+// --- Hàm kiểm tra nguyên liệu thủ công (GIỮ NGUYÊN) ---
+// Hàm này vẫn được giữ lại vì code gốc của bạn sử dụng nó
+async function performManualCheck(bot, mcData, recipe, quantity, isPreliminary) {
+    const checkType = isPreliminary ? "Sơ bộ" : "Chi tiết";
+    console.log(`[Craft ManualCheck - ${checkType}] Kiểm tra thủ công nguyên liệu...`);
+    if (!recipe) {
+        console.error(`[Craft ManualCheck - ${checkType}] Lỗi: Không có công thức hợp lệ để kiểm tra.`);
+        return false;
+    }
+     if (!recipe.result || !recipe.result.count || recipe.result.count <= 0) {
+         console.error(`[Craft ManualCheck - ${checkType}] Lỗi: Công thức không có thông tin số lượng kết quả hợp lệ.`);
+         return false;
+     }
 
-  // Dọn dẹp các interval trước khi dừng task
-  if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval);
-  if (bot.autoEatInterval) clearInterval(bot.autoEatInterval);
-  if (bot.protectionInterval) clearInterval(bot.protectionInterval);
-  bot.stuckDetectionInterval = null; bot.autoEatInterval = null; bot.protectionInterval = null;
-  console.log("[SIGINT] Cleared interval timers.");
+    let craftsNeeded = 1;
+    if (!isPreliminary) {
+        craftsNeeded = Math.ceil(quantity / recipe.result.count);
+        console.log(`[Craft ManualCheck - ${checkType}] Cần ${craftsNeeded} lần craft (mỗi lần tạo ${recipe.result.count}) để có đủ ${quantity} mục tiêu.`);
+    } else {
+         console.log(`[Craft ManualCheck - ${checkType}] Chỉ kiểm tra đủ nguyên liệu cho 1 lần craft.`);
+    }
 
-  stopAllTasks(bot, "Tắt server"); // Dừng các task sau khi đã clear interval
+    const totalNeeded = {};
+    let ingredientsSource = recipe.delta; // Ưu tiên delta
 
-  const quitMessage = `Bot AI (${bot.botInGameName || BOT_USERNAME}) tạm biệt và thoát game!`;
-  try {
-    if (bot.player) { bot.chat(quitMessage); }
-    else { console.log("(Bot không còn trong game để chat)"); }
-  } catch (e) { console.error("Lỗi khi cố gắng chat khi thoát:", e.message); }
+     // Fallback nếu không có delta
+     if (!ingredientsSource || ingredientsSource.length === 0) {
+        console.log(`[Craft ManualCheck - ${checkType}] Không có delta, thử tính từ ingredients/inShape...`);
+        ingredientsSource = [];
+        const source = recipe.ingredients || (recipe.inShape ? recipe.inShape.flat() : null);
 
-  setTimeout(() => {
-    try { if (bot?.quit) bot.quit(); } // Kiểm tra bot.quit tồn tại trước khi gọi
-    catch (e) { console.error("Lỗi khi gọi bot.quit():", e.message); }
-    console.log("Đã ngắt kết nối. Thoát chương trình.");
-    process.exit(0);
-  }, 1000); // Giữ 1 giây để tin nhắn kịp gửi
-});
-// ********************************************
-// --- END OF FILE bot.js ---
+        if (source) {
+            source.forEach(ingredient => {
+                let id = null;
+                let count = 1; // Mặc định cần 1
+
+                if (ingredient === null || ingredient === -1) return; // Bỏ qua ô trống
+
+                if (typeof ingredient === 'object' && ingredient !== null && !Array.isArray(ingredient)) {
+                    if (ingredient.id !== undefined && ingredient.id !== -1) {
+                        id = ingredient.id;
+                        count = ingredient.count || 1;
+                    } else if (ingredient.matching && ingredient.matching.length > 0) {
+                        id = ingredient.matching[0];
+                        count = ingredient.count || 1;
+                    }
+                } else if (typeof ingredient === 'number') {
+                    id = ingredient;
+                } else if (Array.isArray(ingredient) && ingredient.length > 0) {
+                    const firstItem = ingredient.flat()[0];
+                    if (typeof firstItem === 'number' && firstItem !== -1) {
+                        id = firstItem;
+                    }
+                }
+
+                if (id !== null) {
+                    ingredientsSource.push({ id: id, count: -count });
+                }
+            });
+            console.log(`[Craft ManualCheck - ${checkType}] Nguyên liệu tính từ ingredients/inShape:`, ingredientsSource);
+        }
+    }
+
+
+    if (!ingredientsSource || ingredientsSource.length === 0) {
+        console.error(`[Craft ManualCheck - ${checkType}] Lỗi: Không thể xác định nguyên liệu từ công thức.`);
+        return false;
+    }
+
+    console.log(`[Craft ManualCheck - ${checkType}] Phân tích nguyên liệu bị trừ đi:`, ingredientsSource);
+
+    ingredientsSource.forEach(item => {
+        if (item.count < 0) {
+             const neededPerCraft = -item.count;
+             const ingredientId = item.id;
+             if (ingredientId !== null && ingredientId !== undefined && ingredientId !== -1) {
+                 totalNeeded[ingredientId] = (totalNeeded[ingredientId] || 0) + (neededPerCraft * craftsNeeded);
+             }
+        }
+    });
+
+    console.log(`[Craft ManualCheck - ${checkType}] Tổng nguyên liệu cần:`, totalNeeded);
+
+    if (Object.keys(totalNeeded).length === 0 && ingredientsSource.some(i => i.count < 0 && i.id !== -1)) {
+         console.warn(`[Craft ManualCheck - ${checkType}] Tính toán nguyên liệu cần thiết ra rỗng dù có vẻ cần? Kiểm tra lại logic phân tích công thức.`);
+         return true;
+    }
+     if (Object.keys(totalNeeded).length === 0) {
+         console.log(`[Craft ManualCheck - ${checkType}] Công thức có vẻ không cần nguyên liệu? Coi như đủ.`);
+         return true;
+     }
+
+    for (const ingredientIdStr in totalNeeded) {
+        const ingredientId = parseInt(ingredientIdStr, 10);
+        const requiredCount = totalNeeded[ingredientIdStr];
+        const availableCount = bot.inventory.count(ingredientId, null);
+        const ingredientData = mcData.items[ingredientId] || mcData.blocks[ingredientId];
+        const ingredientName = ingredientData?.displayName || ingredientData?.name || `ID ${ingredientId}`;
+        console.log(`[Craft ManualCheck - ${checkType}]   - Kiểm tra ${ingredientName} (ID ${ingredientId}): Cần ${requiredCount}, Có ${availableCount}`);
+        if (availableCount < requiredCount) {
+            console.log(`[Craft ManualCheck - ${checkType}]   -> Không đủ ${ingredientName}!`);
+            return false;
+        }
+    }
+
+    console.log(`[Craft ManualCheck - ${checkType}] Kiểm tra thủ công thành công, có vẻ đủ nguyên liệu.`);
+    return true;
+}
+
+
+// --- Hàm craftItem chính (Đã sửa đổi Bước 5 và 7) ---
+async function craftItem(bot, username, message, aiModel, quantityOverride = null) { // Thêm quantityOverride
+    const isSystemRequest = username === "System"; // Xác định yêu cầu hệ thống
+    console.log(`[Craft] === Bắt đầu xử lý yêu cầu chế tạo từ ${isSystemRequest ? 'System' : username}: "${message}" ===`);
+
+    // --- Bước 1: Trích xuất tên và số lượng (GIỮ NGUYÊN LOGIC CŨ CỦA BẠN + THÊM XỬ LÝ OVERRIDE) ---
+    let itemNameVi = null;
+    let quantity = quantityOverride ?? 1; // Ưu tiên override
+
+    if (!quantityOverride) { // Chỉ gọi AI nếu không có override
+        try {
+            console.log("[Craft] Bước 1: Gửi prompt trích xuất tên và số lượng...");
+            const extractionPrompt = `Từ tin nhắn "${message}", trích xuất tên vật phẩm người chơi muốn chế tạo và số lượng. Nếu không nói số lượng, mặc định là 1. Chỉ trả lời bằng định dạng JSON với hai khóa: "itemName" (string, giữ nguyên tiếng Việt nếu có) và "quantity" (number). Ví dụ: "làm 5 cái đuốc" -> {"itemName": "đuốc", "quantity": 5}. JSON:`;
+            const extractResult = await aiModel.generateContent(extractionPrompt);
+            const jsonResponse = (await extractResult.response.text()).trim();
+            console.log("[Craft Debug] Phản hồi JSON thô từ AI:", jsonResponse);
+            let parsedData;
+             try {
+                const jsonMatch = jsonResponse.match(/\{.*\}/s);
+                if (jsonMatch && jsonMatch[0]) {
+                    parsedData = JSON.parse(jsonMatch[0]);
+                     console.log("[Craft Debug] Parse JSON thành công:", parsedData);
+                } else {
+                     console.log("[Craft Debug] Không tìm thấy cấu trúc JSON hợp lệ trong phản hồi AI. Thử fallback...");
+                     const numMatch = message.match(/\d+/);
+                     const potentialQuantity = numMatch ? parseInt(numMatch[0], 10) : 1;
+                     const potentialName = message.replace(/\d+/, '').replace(/làm|chế tạo|cho|cái/gi, '').trim();
+                     if (potentialName) {
+                         itemNameVi = potentialName;
+                         quantity = potentialQuantity > 0 ? potentialQuantity : 1;
+                         console.log(`[Craft Debug] Fallback: Sử dụng tên="${itemNameVi}", Số lượng=${quantity}.`);
+                     } else { throw new Error("Không thể fallback để trích xuất tên vật phẩm."); }
+                }
+            } catch (parseError) {
+                 console.error("[Craft] Lỗi parse JSON hoặc fallback:", parseError.message, "Response:", jsonResponse);
+                 throw new Error("Không thể phân tích phản hồi từ AI.");
+            }
+            if (parsedData) {
+                itemNameVi = parsedData.itemName;
+                quantity = parseInt(parsedData.quantity, 10);
+                 if (isNaN(quantity) || quantity <= 0) { quantity = 1; }
+            }
+            if (!itemNameVi) throw new Error("AI không trích xuất được tên vật phẩm.");
+            quantity = Math.max(1, quantity); // Đảm bảo số lượng ít nhất là 1
+            console.log(`[Craft] Bước 1: AI trích xuất/Fallback: Tên="${itemNameVi}", Số lượng=${quantity}`);
+        } catch (error) {
+            console.error("[Craft] Lỗi trích xuất từ AI:", error);
+            if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, tôi không hiểu bạn muốn chế tạo gì hoặc số lượng bao nhiêu. (${error.message})`);
+            return false; // Trả về false nếu lỗi
+        }
+    } else { // Xử lý khi có quantityOverride (từ hệ thống)
+         itemNameVi = message.replace(/\d+/g, '').replace(/chế tạo|làm|craft|make/gi, '').trim();
+         quantity = quantityOverride; // Sử dụng trực tiếp override
+         console.log(`[Craft] Bước 1: Yêu cầu hệ thống/Override: Tên="${itemNameVi}", Số lượng=${quantity}`);
+    }
+
+
+    // --- Bước 2: Dịch tên (GIỮ NGUYÊN) ---
+    console.log(`[Craft] Bước 2: Dịch tên vật phẩm "${itemNameVi}" sang ID tiếng Anh...`);
+    // *** SỬ DỤNG LẠI TÊN HÀM GỐC CỦA BẠN ***
+    const itemId = translateToEnglishId(itemNameVi);
+    if (!itemId) {
+        if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, tôi không biết "${itemNameVi}" là vật phẩm gì trong Minecraft.`);
+        console.log(`[Craft] Không thể dịch "${itemNameVi}" sang ID tiếng Anh. Yêu cầu bị hủy.`);
+        return false;
+    }
+    console.log(`[Craft] Bước 2: Đã dịch thành ID: "${itemId}"`);
+
+    // --- Bước 3: Tải mcData (GIỮ NGUYÊN) ---
+    console.log(`[Craft] Bước 3: Tải dữ liệu Minecraft (mcData) cho phiên bản ${bot.version}...`);
+    const mcData = require('minecraft-data')(bot.version);
+    if (!mcData) {
+        console.error(`[Craft] Không thể tải mcData cho phiên bản ${bot.version}!`);
+        if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, tôi gặp sự cố khi tải dữ liệu game.`);
+        return false;
+    }
+    const itemToCraft = mcData.itemsByName[itemId] || mcData.blocksByName[itemId];
+    if (!itemToCraft) {
+        if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, tôi không tìm thấy thông tin về "${itemNameVi}" (${itemId}) trong dữ liệu game.`);
+        console.error(`[Craft] Không tìm thấy item/block data cho ${itemId} trong mcData v${bot.version}. Yêu cầu bị hủy.`);
+        return false;
+    }
+    console.log(`[Craft] Bước 3: Xác nhận mục tiêu chế tạo: ${itemId} (ID: ${itemToCraft.id}), Số lượng: ${quantity}`);
+
+    // --- Bước 4: Lấy công thức từ mcData và xác định yêu cầu bàn (GIỮ NGUYÊN) ---
+    console.log(`[Craft] Bước 4: Lấy định nghĩa công thức trực tiếp từ mcData...`);
+    const knownRecipes = mcData.recipes[itemToCraft.id];
+    if (!knownRecipes || knownRecipes.length === 0) {
+        if (itemToCraft.craftingDifficulty === undefined) {
+             if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, hình như ${itemNameVi} không thể chế tạo được.`);
+        } else {
+             if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, tôi không tìm thấy bất kỳ định nghĩa công thức nào cho ${itemNameVi} trong dữ liệu game.`);
+        }
+        console.log(`[Craft] mcData không có công thức cho ${itemId}. Yêu cầu bị hủy.`);
+        return false;
+    }
+    const firstKnownRecipe = knownRecipes[0];
+    console.log(`[Craft Debug] mcData có ${knownRecipes.length} công thức. Sử dụng công thức đầu tiên để kiểm tra bàn:`, JSON.stringify(firstKnownRecipe, null, 2));
+    console.log(`[Craft Debug - Verify] Giá trị của firstKnownRecipe.requiresTable:`, firstKnownRecipe.requiresTable);
+    let potentialRequiresTable = firstKnownRecipe.requiresTable;
+    const itemsDefinitelyNeedingTable = ['pickaxe', 'axe', 'shovel', 'hoe', 'sword', 'helmet', 'chestplate', 'leggings', 'boots', 'furnace', 'crafting_table', 'chest', 'barrel', 'smoker', 'blast_furnace', 'shield', 'bow', 'bed', 'piston', 'sticky_piston', 'dispenser', 'dropper', 'repeater', 'comparator', 'observer', 'tnt', 'bookshelf', 'jukebox', 'note_block', 'cake', 'cookie', 'pumpkin_pie', 'beacon', 'enchanting_table', 'ender_chest', 'anvil', 'brewing_stand', 'cauldron', 'item_frame', 'flower_pot', 'armor_stand', 'banner', 'shulker_box', 'concrete', 'glazed_terracotta', 'map'];
+    const itemNameLower = itemId.toLowerCase();
+    const itemDisplayNameLower = itemToCraft.displayName?.toLowerCase() || '';
+    const needsTableOverride = itemsDefinitelyNeedingTable.some(suffix => itemNameLower.endsWith(suffix) || itemDisplayNameLower.endsWith(suffix) || itemNameLower.startsWith(suffix));
+    if (needsTableOverride && (potentialRequiresTable === undefined || potentialRequiresTable === false)) {
+        console.warn(`[Craft Debug - Override] Phát hiện ${itemId} thường cần bàn nhưng mcData báo không cần/thiếu thông tin. Ép requiresTable = true.`);
+        potentialRequiresTable = true;
+    } else if (!needsTableOverride && potentialRequiresTable === undefined) {
+         console.warn(`[Craft Debug - Override] Phát hiện ${itemId} thường KHÔNG cần bàn và mcData thiếu thông tin. Giả định requiresTable = false.`);
+         potentialRequiresTable = false;
+    } else if (potentialRequiresTable === undefined) {
+        console.warn(`[Craft Debug - Override] Không chắc ${itemId} có cần bàn không và mcData thiếu thông tin. Mặc định requiresTable = false.`);
+        potentialRequiresTable = false;
+    }
+    console.log(`[Craft Debug] Sau khi kiểm tra/override, xác định công thức ${potentialRequiresTable ? 'YÊU CẦU' : 'KHÔNG yêu cầu'} bàn chế tạo.`);
+
+    // --- Bước 5: Kiểm tra nguyên liệu sơ bộ (SỬA ĐỔI) ---
+    console.log("[Craft] Bước 5: Kiểm tra nguyên liệu sơ bộ (cho ít nhất 1 công thức)...");
+    let preliminaryCheckOK = false;
+    // Lặp qua TẤT CẢ công thức từ mcData để kiểm tra sơ bộ
+    for (const recipe of knownRecipes) {
+        const checkResult = await performManualCheck(bot, mcData, recipe, 1, true);
+        if (checkResult) {
+            preliminaryCheckOK = true;
+            console.log("[Craft] Bước 5: Kiểm tra sơ bộ OK (tìm thấy ít nhất 1 công thức có đủ nguyên liệu cơ bản).");
+            break; // Chỉ cần 1 công thức OK là đủ để tiếp tục
+        }
+    }
+    if (!preliminaryCheckOK) {
+        if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, tôi kiểm tra sơ bộ thấy không đủ nguyên liệu cơ bản cho bất kỳ công thức nào của ${itemNameVi}.`);
+        console.log(`[Craft] Chế tạo bị hủy do kiểm tra sơ bộ thấy thiếu nguyên liệu cho tất cả công thức.`);
+        return false;
+    }
+    // --- KẾT THÚC SỬA ĐỔI BƯỚC 5 ---
+
+    // --- Bước 6: Xử lý bàn chế tạo và lấy công thức khả thi từ bot.recipesFor (GIỮ NGUYÊN) ---
+    let craftingTableBlock = null;
+    let availableRecipes = null; // Danh sách công thức bot thực sự có thể làm
+
+    if (potentialRequiresTable) {
+        console.log("[Craft] Bước 6a: Công thức yêu cầu bàn. Tìm bàn gần đó...");
+        craftingTableBlock = await findNearbyCraftingTable(bot, mcData);
+        if (craftingTableBlock) {
+            console.log("[Craft] Bước 6a: Tìm thấy bàn. Di chuyển đến đó...");
+            const reached = await gotoBlock(bot, craftingTableBlock);
+            if (!reached) {
+                console.log("[Craft] Không thể đến bàn chế tạo đã tìm thấy. Thử đặt bàn mới...");
+                if (!isSystemRequest) bot.chat("Tôi không đến được bàn chế tạo kia, để tôi thử đặt cái mới.");
+                craftingTableBlock = await placeCraftingTable(bot, mcData, username, itemNameVi);
+            }
+        } else {
+            console.log("[Craft] Bước 6a: Không tìm thấy bàn gần đó. Thử đặt bàn mới...");
+            craftingTableBlock = await placeCraftingTable(bot, mcData, username, itemNameVi);
+        }
+        if (!craftingTableBlock) {
+            console.log(`[Craft] Không thể cung cấp bàn chế tạo. Yêu cầu bị hủy.`);
+            return false;
+        }
+        console.log(`[Craft] Bước 6a: Đã có bàn chế tạo tại ${formatCoords(craftingTableBlock.position)}. Lấy công thức khả thi...`);
+        availableRecipes = bot.recipesFor(itemToCraft.id, null, 1, craftingTableBlock); // Lấy công thức VỚI bàn
+    } else {
+        console.log("[Craft] Bước 6b: Công thức không cần bàn. Lấy công thức khả thi...");
+        availableRecipes = bot.recipesFor(itemToCraft.id, null, 1, null); // Lấy công thức KHÔNG cần bàn
+    }
+
+    // --- Bước 7: Kiểm tra lại công thức và nguyên liệu chi tiết (SỬA ĐỔI) ---
+    let recipeToUse = null; // Công thức cuối cùng sẽ dùng
+    if (!availableRecipes || availableRecipes.length === 0) {
+         if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, tôi không tìm thấy công thức nào phù hợp với nguyên liệu tôi đang có để chế tạo ${itemNameVi}${potentialRequiresTable ? ' (dùng bàn chế tạo)' : ''}.`);
+         console.log(`[Craft] bot.recipesFor trả về rỗng (thiếu nguyên liệu?). Yêu cầu bị hủy.`);
+         return false;
+    }
+    console.log(`[Craft] Bước 7: Tìm thấy ${availableRecipes.length} công thức khả thi từ bot.recipesFor. Kiểm tra chi tiết từng công thức...`);
+
+    // Lặp qua các công thức bot báo là khả thi và chọn cái đầu tiên vượt qua kiểm tra chi tiết
+    for (const recipe of availableRecipes) {
+        console.log("[Craft Debug] Kiểm tra chi tiết công thức:", JSON.stringify(recipe, null, 2));
+        const detailedCheckOK = await performManualCheck(bot, mcData, recipe, quantity, false);
+        if (detailedCheckOK) {
+            recipeToUse = recipe; // Chọn công thức này
+            console.log(`[Craft] Bước 7: Công thức này OK sau kiểm tra chi tiết. Sẽ sử dụng công thức này.`);
+            break; // Dừng lại khi tìm thấy công thức phù hợp
+        } else {
+            console.log(`[Craft] Bước 7: Công thức này không vượt qua kiểm tra chi tiết (thiếu nguyên liệu cho số lượng ${quantity}). Thử công thức tiếp theo...`);
+        }
+    }
+
+    // Nếu không có công thức nào vượt qua kiểm tra chi tiết
+    if (!recipeToUse) {
+        if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, tôi kiểm tra lại thì thấy không đủ nguyên liệu để chế tạo ${quantity} ${itemNameVi} bằng bất kỳ cách nào tôi biết.`);
+        console.log(`[Craft] Chế tạo bị hủy do không có công thức nào vượt qua kiểm tra chi tiết cho ${quantity} ${itemId}.`);
+        return false;
+    }
+    console.log(`[Craft] Bước 7: Đã chọn công thức cuối cùng để sử dụng.`);
+    // --- KẾT THÚC SỬA ĐỔI BƯỚC 7 ---
+
+    // --- Bước 8: Thực hiện chế tạo (GIỮ NGUYÊN LOGIC CŨ CỦA BẠN) ---
+    // Tính số lần craft cần thiết dựa trên recipeToUse đã chọn
+    if (!recipeToUse.result || !recipeToUse.result.count || recipeToUse.result.count <= 0) {
+         console.error("[Craft] Lỗi: Công thức được chọn không có thông tin số lượng kết quả hợp lệ.");
+         if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, có lỗi với công thức của ${itemNameVi}.`);
+         return false;
+    }
+    const craftsNeeded = Math.ceil(quantity / recipeToUse.result.count);
+    console.log(`[Craft Debug] Cần ${craftsNeeded} lần craft để có ${quantity} ${itemId} (mỗi lần ra ${recipeToUse.result.count})`);
+
+    console.log(`[Craft] Bước 8: Bắt đầu thực hiện ${craftsNeeded} lần chế tạo ${itemId}...`);
+    // Chỉ chat nếu là yêu cầu từ người dùng
+    if (!isSystemRequest) bot.chat(`Ok ${username}, bắt đầu chế tạo ${quantity} ${itemNameVi}...`);
+    let itemBefore = bot.inventory.count(itemToCraft.id, null);
+    let craftedSuccessfully = false; // Thêm biến để theo dõi thành công
+    try {
+        await bot.craft(recipeToUse, craftsNeeded, craftingTableBlock);
+        console.log(`[Craft] Yêu cầu ${craftsNeeded} lần chế tạo ${itemId} đã gửi. Chờ ${15 + craftsNeeded * 2} ticks...`);
+        await bot.waitForTicks(15 + craftsNeeded * 2);
+        craftedSuccessfully = true; // Giả định thành công nếu không có lỗi
+
+        // Kiểm tra kết quả (giữ nguyên logic kiểm tra của bạn)
+        const itemAfter = bot.inventory.count(itemToCraft.id, null);
+        const craftedCount = itemAfter - itemBefore;
+        console.log(`[Craft Debug] Số lượng ${itemId} sau khi craft: ${itemAfter} (Trước: ${itemBefore})`);
+        if (itemAfter >= itemBefore + (craftsNeeded * recipeToUse.result.count)) {
+             console.log(`[Craft] Bước 8: Chế tạo thành công! Số lượng ${itemId} hiện tại: ${itemAfter}`);
+             if (!isSystemRequest) bot.chat(`${username}, tôi đã chế tạo xong ${itemNameVi}! (Hiện có ${itemAfter} cái)`);
+        } else if (craftedCount > 0 || (itemAfter >= quantity && itemBefore < quantity)) {
+             console.log(`[Craft] Bước 8: Chế tạo hoàn tất. Số lượng ${itemId} hiện tại: ${itemAfter}`);
+             if (!isSystemRequest) bot.chat(`${username}, tôi đã chế tạo xong ${itemNameVi}! (Hiện có ${itemAfter} cái)`);
+        } else if (itemAfter === itemBefore && itemAfter > 0) {
+             console.warn(`[Craft] Bước 8: Cảnh báo: Số lượng ${itemId} không đổi (${itemAfter}) sau khi craft.`);
+             if (!isSystemRequest) bot.chat(`${username}, tôi đã thử chế tạo ${itemNameVi}, nhưng số lượng không thay đổi. (Hiện có ${itemAfter} cái)`);
+             craftedSuccessfully = false; // Coi như không thành công như mong đợi
+        } else {
+            console.warn(`[Craft] Bước 8: Cảnh báo: Số lượng ${itemId} không tăng hoặc về 0 (Trước: ${itemBefore}, Sau: ${itemAfter}). Có thể đã xảy ra lỗi không bắt được.`);
+            if (!isSystemRequest) bot.chat(`Hmm ${username}, tôi đã thử chế tạo ${itemNameVi}, nhưng không chắc nó đã vào túi đồ chưa.`);
+            craftedSuccessfully = false;
+        }
+
+    } catch (err) {
+        console.error(`[Craft] Lỗi nghiêm trọng trong quá trình gọi bot.craft cho ${itemId}:`, err);
+        if (!isSystemRequest) bot.chat(`Xin lỗi ${username}, tôi gặp lỗi khi đang chế tạo ${itemNameVi}.`);
+        if (err.message) {
+            console.error(`[Craft] Chi tiết lỗi: ${err.message}`);
+            const lowerMsg = err.message.toLowerCase();
+            if (lowerMsg.includes('missing requirement') || lowerMsg.includes('not enough')) {
+                 if (!isSystemRequest) bot.chat(`(Lỗi: Hình như bị thiếu nguyên liệu giữa chừng.)`);
+                 console.log(`[Craft Debug] Lỗi "missing requirement" xảy ra mặc dù đã kiểm tra thủ công.`);
+            } else if (lowerMsg.includes('no space')) {
+                 if (!isSystemRequest) bot.chat(`(Lỗi: Túi đồ của tôi đầy mất rồi.)`);
+            } else if (lowerMsg.includes('pathfinding') || lowerMsg.includes('timeout') || lowerMsg.includes('unreachable') || lowerMsg.includes('cannot find path')) {
+                 if (!isSystemRequest) bot.chat(`(Lỗi: Tôi gặp vấn đề khi di chuyển đến bàn chế tạo hoặc tương tác.)`);
+            } else if (lowerMsg.includes('recipe not found') || lowerMsg.includes('invalid recipe')) {
+                 if (!isSystemRequest) bot.chat(`(Lỗi: Công thức tôi định dùng có vẻ không hợp lệ?)`);
+            }
+            else {
+                 if (!isSystemRequest) bot.chat(`(Chi tiết lỗi: ${err.message})`);
+            }
+        }
+        console.log("[Craft Debug] Dừng pathfinder (nếu đang chạy) do lỗi chế tạo...");
+        try {
+            if (bot.pathfinder && bot.pathfinder.isMoving()) {
+                bot.pathfinder.stop();
+                console.log("[Craft Debug] Pathfinder đã dừng.");
+            }
+        } catch(e) {
+            console.warn("[Craft Debug] Lỗi khi cố gắng dừng pathfinder:", e.message);
+        }
+        craftedSuccessfully = false; // Đánh dấu thất bại nếu có lỗi
+    } finally {
+         console.log(`[Craft] === Kết thúc xử lý yêu cầu chế tạo cho ${isSystemRequest ? 'System' : username}: "${message}" ===`);
+    }
+
+    return craftedSuccessfully; // Trả về true nếu không có lỗi và kiểm tra cuối cùng OK (hoặc ít nhất có tăng), ngược lại false
+}
+
+// --- Export hàm chính ---
+module.exports = {
+    craftItem,
+};
+// --- END OF FILE commands/craft.js ---

@@ -3,31 +3,34 @@ const { Vec3 } = require("vec3");
 const { sleep } = require("../utils");
 const craftCommands = require("./craft");
 
-const TORCH_LIGHT_THRESHOLD = 1;
-const PLACEMENT_LIGHT_THRESHOLD = 3;
-const CHECK_DISTANCE = 3;
-const PLACE_COOLDOWN_MS = 2000;
-const MIN_TORCH_DISTANCE = 7; // Khoảng cách tối thiểu giữa các đuốc
+// --- Ngưỡng và Cài đặt ---
+const TORCH_LIGHT_THRESHOLD = 3;      // Mức ánh sáng tại chân bot để kích hoạt đặt đuốc (<= ngưỡng này sẽ đặt)
+const PLACEMENT_LIGHT_THRESHOLD = 7;  // Mức ánh sáng tối đa cho phép tại vị trí SẼ ĐẶT đuốc (đặt nếu < ngưỡng này) - Dùng cho validate
+const CHECK_DISTANCE = 3;             // Khoảng cách tìm tường xung quanh để đặt
+const PLACE_COOLDOWN_MS = 2000;       // Thời gian chờ tối thiểu giữa 2 lần đặt đuốc
+const MIN_TORCH_DISTANCE = 7;         // Khoảng cách tối thiểu giữa các đuốc đã đặt và vị trí mới
 const REQUIRED_COAL = 1;
 const REQUIRED_STICK = 1;
-const TORCH_CRAFT_AMOUNT = 8;
+const TORCH_CRAFT_AMOUNT = 8;         // Số lượng đuốc chế tạo mỗi lần
 
-const ENABLE_CREATE_SPOT = true;
-const CREATE_SPOT_BLOCK_NAME = "dirt";
-const ENABLE_MOVE_TO_PLACE = true;
-const SEARCH_FURTHER_DISTANCE = 10;
+// --- Tùy chọn hành vi ---
+const ENABLE_CREATE_SPOT = true;      // Bật/tắt khả năng tạo khối đất để đặt đuốc
+const CREATE_SPOT_BLOCK_NAME = "dirt"; // Loại khối sẽ tạo (cần có trong inventory)
+// const ENABLE_MOVE_TO_PLACE = false; // Đã loại bỏ logic này
 
+// --- Biến trạng thái ---
 let botInstance = null;
 let aiModelInstance = null;
 let lastPlaceTime = 0;
 let isProcessingAutoTorch = false;
 
+// --- Khởi tạo ---
 function initializeAutoTorch(bot, aiModel) {
   botInstance = bot;
   aiModelInstance = aiModel;
   isProcessingAutoTorch = false;
   lastPlaceTime = 0;
-  console.log("[Auto Torch] Đã khởi tạo. 🔥");
+  console.log("[Auto Torch] Đã khởi tạo (Chế độ đặt tại chỗ). 🔥");
 
   if (!aiModelInstance) {
     console.warn(
@@ -35,168 +38,222 @@ function initializeAutoTorch(bot, aiModel) {
     );
   }
 
-  if (ENABLE_MOVE_TO_PLACE) {
-    try {
-      if (!botInstance.pathfinder) {
-        const { pathfinder, Movements } = require("mineflayer-pathfinder");
-        botInstance.loadPlugin(pathfinder);
-        const defaultMove = new Movements(botInstance);
-        botInstance.pathfinder.setMovements(defaultMove);
-        console.log(
-          "[Auto Torch] Pathfinder đã được load cho chức năng di chuyển."
-        );
-      }
-    } catch (err) {
-      console.error(err.message);
+  // Không cần load pathfinder cho auto_torch nữa nếu chỉ đặt tại chỗ
+  // Tuy nhiên, các module khác có thể cần nên tạm thời không xóa phần load
+  try {
+    if (!botInstance.pathfinder) {
+      const { pathfinder, Movements } = require("mineflayer-pathfinder");
+      botInstance.loadPlugin(pathfinder);
+      const defaultMove = new Movements(botInstance);
+      botInstance.pathfinder.setMovements(defaultMove);
+      // console.log("[Auto Torch] Pathfinder đã được load (có thể cần cho module khác).");
     }
+  } catch (err) {
+    // console.error("[Auto Torch] Lỗi load pathfinder:", err.message);
   }
+
 
   const createBlock = bot.registry.itemsByName[CREATE_SPOT_BLOCK_NAME];
   if (ENABLE_CREATE_SPOT && !createBlock) {
+    console.warn(`[Auto Torch] Khối ${CREATE_SPOT_BLOCK_NAME} không tồn tại trong registry game! Tắt chức năng tạo khối.`);
+    // ENABLE_CREATE_SPOT = false; // Hoặc xử lý lỗi khác
   }
 }
 
+// --- Hàm kiểm tra và đặt đuốc chính ---
 async function checkAndPlaceTorch() {
-    if (!botInstance || !botInstance.entity) return false; // Bot chưa sẵn sàng
+  if (!botInstance || !botInstance.entity) return false; // Bot chưa sẵn sàng
 
-    // Kiểm tra xem có tác vụ di chuyển hoặc nhiệm vụ ưu tiên nào khác đang chạy không
-    if (botInstance.isNavigating || // Cờ từ lệnh goto/waypoint
-        botInstance.isFollowing ||  // Cờ từ lệnh follow
-        botInstance.isStripMining || // Cờ từ lệnh strip_mine (vì nó cũng di chuyển nhiều)
-        botInstance.isHunting ||     // Cờ từ lệnh hunt
-        botInstance.isCollecting ||  // Cờ từ lệnh collect (nếu có di chuyển)
-        botInstance.isDepositing ||  // Cờ từ lệnh deposit (nếu có di chuyển)
-        botInstance.isFlattening || // Cờ từ lệnh flatten
-        botInstance.isFarmingWheat || // Cờ từ lệnh farm wheat
-        botInstance.isBuilding ||    // Cờ từ lệnh build
-        botInstance.isProtecting ||  // Đang bảo vệ (có thể di chuyển)
-        botInstance.isDefending ||   // Đang tự vệ (chắc chắn di chuyển)
-        botInstance.isSleeping       // Đang ngủ
-       )
-    {
-        // console.log("[Auto Torch] Skipping check: Another priority task is active."); // Bỏ comment nếu muốn debug
-        return false; // Không chạy auto_torch nếu bot đang bận việc khác
-    }
-    // <<< KẾT THÚC KIỂM TRA >>>
+  // *** KIỂM TRA KHỐI DƯỚI CHÂN ĐỂ TRÁNH LỖI ***
+  const posBelowFeet = botInstance.entity.position.offset(0, -0.1, 0).floored(); // Vị trí ngay dưới chân
+  const blockBelow = botInstance.blockAt(posBelowFeet);
+  // Nếu không có khối dưới chân hoặc là air (đang rơi?), hoặc không phải khối rắn thì bỏ qua
+  if (!blockBelow || blockBelow.name === "air" || blockBelow.boundingBox !== 'block') {
+    // console.log("[Auto Torch] Bỏ qua: Đang rơi hoặc không có khối rắn dưới chân.");
+    return false;
+  }
+
+  // Kiểm tra các tác vụ ưu tiên khác đang chạy
+  if (
+    botInstance.isNavigating || botInstance.isFollowing || botInstance.isStripMining ||
+    botInstance.isHunting || botInstance.isCollecting || botInstance.isDepositing ||
+    botInstance.isFlattening || botInstance.isFarmingWheat || botInstance.isBuilding ||
+    botInstance.isProtecting || botInstance.isDefending || botInstance.isSleeping
+  ) {
+    // console.log("[Auto Torch] Skipping check: Another priority task is active.");
+    return false;
+  }
+
+  // Kiểm tra xử lý và cooldown
   if (isProcessingAutoTorch) return false;
-
   const now = Date.now();
   if (now - lastPlaceTime < PLACE_COOLDOWN_MS) return false;
 
-  const blockAtFeet = botInstance.blockAt(botInstance.entity.position);
-  if (!blockAtFeet) return false;
+  // *** KIỂM TRA ÁNH SÁNG TẠI VỊ TRÍ CHÂN BOT ***
+  const blockAtFeet = botInstance.blockAt(botInstance.entity.position.floored()); // Lấy khối tại chân (có thể là air)
+  if (!blockAtFeet) return false; // Không lấy được thông tin khối
 
-  const lightLevelAtFeet = blockAtFeet.light;
-  if (lightLevelAtFeet > TORCH_LIGHT_THRESHOLD) { // Dùng > thay vì >= để đặt khi ánh sáng <= ngưỡng
+  // Nếu khối tại chân đã là đuốc thì bỏ qua
+  if (blockAtFeet.name.includes('torch')) {
+    // console.log("[Auto Torch DEBUG] Block at feet is already a torch. Skipping.");
     return false;
+  }
+
+  const lightLevelAtFeet = blockAtFeet.light || 0; // Lấy ánh sáng tại chân, mặc định là 0 nếu lỗi
+
+  // --- DEBUG LOG ---
+  const currentPos = botInstance.entity.position;
+  // console.log(`[Auto Torch DEBUG] Pos: ${formatCoords(currentPos)}, BlockBelow: ${blockBelow.name}(${blockBelow.type}), FeetBlock: ${blockAtFeet.name}(${blockAtFeet.type}), Light@Feet: ${lightLevelAtFeet}, Threshold: ${TORCH_LIGHT_THRESHOLD}`);
+  // ---------------
+
+  // Nếu ánh sáng đủ, không cần làm gì cả
+  if (lightLevelAtFeet >= TORCH_LIGHT_THRESHOLD) {
+    // console.log("[Auto Torch DEBUG] Light OK, skipping.");
+    return false;
+  }
+
+  // === BẮT ĐẦU XỬ LÝ ĐẶT ĐUỐC ===
+  // console.log(`[Auto Torch] Phát hiện ánh sáng thấp (${lightLevelAtFeet}), bắt đầu xử lý đặt đuốc...`);
+  isProcessingAutoTorch = true;
+
+  try {
+    // 1. Kiểm tra và chế tạo đuốc nếu cần
+    let torchItem = botInstance.inventory.findInventoryItem(botInstance.registry.itemsByName.torch.id);
+    if (!torchItem) {
+      // console.log("[Auto Torch] Không có đuốc, thử chế tạo...");
+      const crafted = await checkAndCraftTorches();
+      if (!crafted) {
+        // console.log("[Auto Torch] Chế tạo đuốc thất bại hoặc không đủ nguyên liệu.");
+        isProcessingAutoTorch = false;
+        return false;
+      }
+      await sleep(500); // Chờ inventory cập nhật
+      torchItem = botInstance.inventory.findInventoryItem(botInstance.registry.itemsByName.torch.id);
+      if (!torchItem) {
+        // console.error("[Auto Torch] Lỗi: Đã báo chế tạo nhưng không tìm thấy đuốc!");
+        isProcessingAutoTorch = false;
+        return false;
+      }
+      // console.log("[Auto Torch] Đã chế tạo đuốc, tiếp tục tìm chỗ đặt.");
+    }
+
+    // *** ƯU TIÊN 1: ĐẶT NGAY DƯỚI CHÂN ***
+    // (Sử dụng lại blockBelow và blockAtFeet đã lấy ở trên)
+    // console.log(`[DEBUG P1 Check] blockBelow: ${!!blockBelow}, boundingBox: ${blockBelow?.boundingBox}, canPlaceOn: ${blockBelow?.canPlaceOn}, blockAtFeet: ${!!blockAtFeet}, feetNameAir: ${blockAtFeet?.name === 'air'}`);
+    if (blockBelow && blockBelow.boundingBox === 'block'  && blockAtFeet && blockAtFeet.name === 'air') {
+        // console.log(`[Auto Torch] Thử Ưu tiên 1: Đặt dưới chân lên ${blockBelow.name}...`);
+        const placeTargetBelow = {
+            block: blockBelow,
+            faceVector: new Vec3(0, 1, 0), // Đặt lên mặt trên
+            position: blockAtFeet.position, // Vị trí dự kiến của đuốc (tại chân)
+        };
+
+        // Kiểm tra ánh sáng và đuốc gần tại vị trí sẽ đặt (chân)
+        const canPlaceFloorTorch = await canPlaceFloorTorchCheck(placeTargetBelow.position);
+        if (canPlaceFloorTorch) {
+            const placed = await validateAndPlaceTorch(placeTargetBelow, torchItem);
+            if (placed) {
+                console.log("[Auto Torch] Đặt đuốc dưới chân thành công! ✨");
+                lastPlaceTime = Date.now();
+                isProcessingAutoTorch = false;
+                return true; // <-- THÀNH CÔNG, KẾT THÚC
+            } else {
+                // console.log("[Auto Torch] Đặt dưới chân thất bại (validate/place).");
+            }
+        } else {
+            // console.log("[Auto Torch] Không thể đặt dưới chân (ánh sáng/đuốc gần).");
+        }
+    }
+
+    // *** ƯU TIÊN 2: ĐẶT TRÊN TƯỜNG GẦN ***
+    // console.log("[Auto Torch] Thử Ưu tiên 2: Tìm tường xung quanh...");
+    // Tìm kiếm từ vị trí đầu bot để ưu tiên đặt ngang tầm mắt
+    const blockAtHead = botInstance.blockAt(botInstance.entity.position.offset(0, 1, 0));
+    if (blockAtHead && blockAtHead.position) {
+        const immediatePlaceTarget = await findValidTorchPlacementOriginal(blockAtHead.position);
+        if (immediatePlaceTarget) {
+            // console.log(`[Auto Torch] Tìm thấy tường tại ${formatCoords(immediatePlaceTarget.block.position)}, đặt tại ${formatCoords(immediatePlaceTarget.position)}. Thử đặt...`);
+            const placed = await validateAndPlaceTorch(immediatePlaceTarget, torchItem);
+            if (placed) {
+                console.log("[Auto Torch] Đặt đuốc lên tường thành công! ✨");
+                lastPlaceTime = Date.now();
+                isProcessingAutoTorch = false;
+                return true; // <-- THÀNH CÔNG, KẾT THÚC
+            } else {
+                // console.log("[Auto Torch] Đặt lên tường thất bại (validate/place).");
+            }
+        } else {
+            // console.log("[Auto Torch] Không tìm thấy tường hợp lệ xung quanh.");
+        }
+    } else {
+        //  console.warn("[Auto Torch] Không thể lấy block ở đầu để tìm tường.");
+    }
+
+
+    // *** ƯU TIÊN 3: TẠO KHỐI VÀ ĐẶT LÊN ***
+    if (ENABLE_CREATE_SPOT) {
+      // console.log("[Auto Torch] Thử Ưu tiên 3: Tạo khối để đặt đuốc...");
+      const createdAndPlaced = await tryCreateAndPlaceTorch(torchItem);
+      if (createdAndPlaced) {
+        console.log("[Auto Torch] Tạo khối và đặt đuốc thành công! ✨");
+        lastPlaceTime = Date.now();
+        isProcessingAutoTorch = false;
+        return true; // <-- THÀNH CÔNG, KẾT THÚC
+      } else {
+        // Log lỗi đã có trong hàm con
+      }
+    }
+
+    // Nếu tất cả các cách trên đều thất bại
+    // console.log("[Auto Torch] Không thể đặt đuốc tại chỗ bằng mọi cách.");
+    isProcessingAutoTorch = false;
+    return false; // Tất cả thất bại
+
+  } catch (err) {
+    console.error("[Auto Torch] Lỗi không mong muốn trong checkAndPlaceTorch:", err.message, err.stack);
+    if (err.message?.includes('TransactionExpiredError')) {
+      console.warn("[Auto Torch] TransactionExpiredError - có thể do lag server.");
+    }
+    isProcessingAutoTorch = false;
+    return false;
+  }
 }
-   // === BẮT ĐẦU XỬ LÝ ===
-   isProcessingAutoTorch = true; // <--- Đặt cờ NGAY LẬP TỨC
 
-   try {
-       let torchItem = botInstance.inventory.findInventoryItem(botInstance.registry.itemsByName.torch.id);
-       if (!torchItem) {
-           console.log("[Auto Torch] Không có đuốc, thử chế tạo...");
-           const crafted = await checkAndCraftTorches(); // checkAndCraft đã có log riêng
-           if (!crafted) {
-               console.log("[Auto Torch] Chế tạo đuốc thất bại hoặc không đủ nguyên liệu.");
-               isProcessingAutoTorch = false; // Reset flag
-               return false;
-           }
-           await sleep(500); // Chờ inventory cập nhật
-           torchItem = botInstance.inventory.findInventoryItem(botInstance.registry.itemsByName.torch.id);
-           if (!torchItem) {
-               console.error("[Auto Torch] Lỗi: Đã báo chế tạo nhưng không tìm thấy đuốc!");
-               isProcessingAutoTorch = false; // Reset flag
-               return false;
-           }
-           console.log("[Auto Torch] Đã chế tạo đuốc, tiếp tục tìm chỗ đặt.");
-       }
+// --- Hàm phụ trợ ---
 
-       // *** ƯU TIÊN 1: ĐẶT TỨC THỜI ***
-       const blockAtHead = botInstance.blockAt(botInstance.entity.position.offset(0, 1, 0));
-       if (!blockAtHead || !blockAtHead.position) {
-            console.warn("[Auto Torch] Không thể lấy block ở đầu.");
-            isProcessingAutoTorch = false; // Reset flag
-            return false;
-       }
-       const immediatePlaceTarget = await findValidTorchPlacementOriginal(blockAtHead.position);
-       if (immediatePlaceTarget) {
-           console.log(`[Auto Torch] Tìm thấy vị trí tức thời tại ${formatCoords(immediatePlaceTarget.position)}. Thử đặt...`);
-           const placed = await validateAndPlaceTorch(immediatePlaceTarget, torchItem);
-           if (placed) {
-               console.log("[Auto Torch] Đặt đuốc tức thời thành công! ✨");
-               lastPlaceTime = Date.now();
-               isProcessingAutoTorch = false; // Reset flag
-               return true; // <--- Thành công, kết thúc
-           } else {
-                console.log("[Auto Torch] Đặt đuốc tức thời thất bại (validate/place).");
-                // Không return, thử cách khác
-           }
-       } else {
-           // console.log("[Auto Torch] Không tìm thấy vị trí tức thời hợp lệ."); // Log đã có trong hàm tìm
-       }
+// Kiểm tra điều kiện trước khi đặt đuốc dưới sàn
+async function canPlaceFloorTorchCheck(potentialTorchPos) {
+    if (!potentialTorchPos) return false;
 
-       // *** ƯU TIÊN 2: TẠO KHỐI ***
-       if (ENABLE_CREATE_SPOT) {
-           console.log("[Auto Torch] Thử tạo khối để đặt đuốc...");
-           const createdAndPlaced = await tryCreateAndPlaceTorch(torchItem);
-           if (createdAndPlaced) {
-               console.log("[Auto Torch] Tạo khối và đặt đuốc thành công! ✨");
-               lastPlaceTime = Date.now();
-               isProcessingAutoTorch = false; // Reset flag
-               return true; // <--- Thành công, kết thúc
-           } else {
-               // console.log("[Auto Torch] Tạo khối và đặt thất bại."); // Hàm con đã có log lỗi
-               // Không return, thử cách khác
-           }
-       }
+    const blockAtPlacement = botInstance.blockAt(potentialTorchPos);
+    if (!blockAtPlacement) {
+        // console.warn(`[Auto Torch Floor Check] Không thể lấy thông tin khối tại ${formatCoords(potentialTorchPos)}.`);
+        return false;
+    }
 
-       // *** ƯU TIÊN 3: DI CHUYỂN (Cách gọi đã thay đổi) ***
-       if (ENABLE_MOVE_TO_PLACE && botInstance.pathfinder) {
-           console.log("[Auto Torch] Thử tìm vị trí xa hơn và di chuyển đến...");
-           // Gọi hàm mới (nó trả về Promise nhưng chúng ta không await)
-           // Nó sẽ trả về false ngay lập tức để checkAndPlaceTorch kết thúc
-           // và isProcessingAutoTorch sẽ ngăn chặn lần gọi tiếp theo cho đến khi
-           // Promise di chuyển được giải quyết (thành công hoặc thất bại).
-           const movePromise = findAndMoveToPlaceTorch(torchItem);
+    // Kiểm tra ánh sáng tại vị trí đặt tiềm năng (dùng PLACEMENT_LIGHT_THRESHOLD để nhất quán)
+    if (blockAtPlacement.light >= PLACEMENT_LIGHT_THRESHOLD) {
+        // console.log(`[Auto Torch Floor Check] Bỏ qua, ánh sáng tại ${formatCoords(potentialTorchPos)} là ${blockAtPlacement.light} (>= ${PLACEMENT_LIGHT_THRESHOLD})`);
+        return false;
+    }
 
-           // Xử lý kết quả của Promise ĐỂ reset cờ isProcessingAutoTorch
-           movePromise.then(placedSuccessfully => {
-                console.log(`[Auto Torch] Kết quả di chuyển và đặt (Promise): ${placedSuccessfully}`);
-                if (placedSuccessfully) {
-                    lastPlaceTime = Date.now(); // Cập nhật thời gian nếu thành công
-                }
-                isProcessingAutoTorch = false; // <<< RESET CỜ Ở ĐÂY KHI PROMISE KẾT THÚC
-           }).catch(err => {
-               // Hiếm khi xảy ra nếu Promise được cấu trúc đúng để luôn resolve
-               console.error("[Auto Torch] Lỗi không mong muốn từ Promise di chuyển:", err);
-               isProcessingAutoTorch = false; // <<< RESET CỜ KHI CÓ LỖI KHÔNG MONG MUỐN
-           });
+    // Kiểm tra đuốc gần vị trí đặt tiềm năng
+    const nearbyTorches = botInstance.findBlocks({
+        point: potentialTorchPos,
+        matching: (block) => block && (block.name === "torch" || block.name === "wall_torch"),
+        maxDistance: MIN_TORCH_DISTANCE,
+        count: 1,
+    });
+    if (Array.isArray(nearbyTorches) && nearbyTorches.length > 0) {
+        // console.log(`[Auto Torch Floor Check] Bỏ qua, đã có đuốc gần tại ${formatCoords(nearbyTorches[0].position)}`);
+        return false;
+    }
 
-            // Quan trọng: Trả về false ngay lập tức cho lần gọi checkAndPlaceTorch này
-            // vì hành động di chuyển/đặt đang diễn ra trong nền.
-            console.log("[Auto Torch] Đã bắt đầu di chuyển (nếu tìm thấy chỗ). Kết thúc lần kiểm tra này.");
-            return false; // <--- Luôn trả về false khi bắt đầu di chuyển
-
-       } else if (ENABLE_MOVE_TO_PLACE && !botInstance.pathfinder) {
-            console.warn("[Auto Torch] Đã bật di chuyển nhưng pathfinder không khả dụng.");
-       }
-
-       // Nếu đến đây tức là tất cả các cách đều thất bại (hoặc đã bắt đầu di chuyển)
-       console.log("[Auto Torch] Không thể đặt đuốc trong lần kiểm tra này.");
-       isProcessingAutoTorch = false; // Reset flag nếu không làm gì cả
-       return false; // Tất cả thất bại -> Kết thúc
-
-   } catch (err) {
-       console.error("[Auto Torch] Lỗi không mong muốn trong checkAndPlaceTorch:", err.message, err.stack);
-       if (err.message?.includes('TransactionExpiredError')) {
-           console.warn("[Auto Torch] TransactionExpiredError - có thể do lag server.");
-       }
-       isProcessingAutoTorch = false; // Reset flag nếu có lỗi
-       return false;
-   }
+    return true; // Có thể đặt
 }
+
+
+// Chế tạo đuốc
 async function checkAndCraftTorches() {
   const coalCount =
     botInstance.inventory.count(botInstance.registry.itemsByName.coal.id) +
@@ -207,23 +264,28 @@ async function checkAndCraftTorches() {
 
   if (coalCount >= REQUIRED_COAL && stickCount >= REQUIRED_STICK) {
     if (!aiModelInstance) {
+        // console.warn("[Auto Torch] Không có AI Model để thực hiện chế tạo.");
       return false;
     }
     try {
+      console.log(`[Auto Torch] Đang yêu cầu AI chế tạo ${TORCH_CRAFT_AMOUNT} đuốc...`);
       const crafted = await craftCommands.craftItem(
         botInstance,
-        "System",
+        "System", // Hoặc tên người dùng nếu muốn
         `chế tạo ${TORCH_CRAFT_AMOUNT} đuốc`,
         aiModelInstance,
-        TORCH_CRAFT_AMOUNT
+        TORCH_CRAFT_AMOUNT // Số lượng mong muốn (AI có thể không làm đúng)
       );
 
       if (crafted) {
+        console.log("[Auto Torch] AI báo cáo đã chế tạo đuốc thành công.");
         return true;
       } else {
+        // console.log("[Auto Torch] AI báo cáo chế tạo đuốc thất bại.");
         return false;
       }
     } catch (craftError) {
+      console.error("[Auto Torch] Lỗi khi gọi hàm craftItem:", craftError);
       return false;
     }
   } else {
@@ -234,84 +296,115 @@ async function checkAndCraftTorches() {
   }
 }
 
-// *** HÀM TÌM KIẾM GỐC ĐÃ SỬA - THÊM KIỂM TRA ĐUỐC GẦN ***
+// Tìm vị trí đặt trên tường gần
 async function findValidTorchPlacementOriginal(searchPoint) {
   if (!botInstance || !botInstance.version || !searchPoint) return null;
 
   const placeableFacesData = [
-    { face: 2, vector: new Vec3(0, 0, 1) },
-    { face: 3, vector: new Vec3(0, 0, -1) },
-    { face: 4, vector: new Vec3(1, 0, 0) },
-    { face: 5, vector: new Vec3(-1, 0, 0) },
+    // { face: 0, vector: new Vec3(0, 1, 0) }, // Mặt trên - Không dùng cho tường
+    // { face: 1, vector: new Vec3(0, -1, 0) }, // Mặt dưới - Không dùng cho tường
+    { face: 2, vector: new Vec3(0, 0, 1) }, // +Z
+    { face: 3, vector: new Vec3(0, 0, -1) }, // -Z
+    { face: 4, vector: new Vec3(1, 0, 0) }, // +X
+    { face: 5, vector: new Vec3(-1, 0, 0) }, // -X
   ];
 
   const nearbySolidBlocks = botInstance.findBlocks({
     matching: (block) =>
       block &&
-      block.boundingBox === "block" &&
+      block.boundingBox === "block" && // Phải là khối rắn
       block.name !== "air" &&
       !block.name.includes("torch") &&
       !block.name.includes("sign") &&
+      !block.name.includes("button") && // Thêm các khối không nên đặt lên
+      !block.name.includes("lever") &&
       !block.name.includes("door") &&
-      !block.name.includes("gate"),
+      !block.name.includes("gate") &&
+      !block.name.includes("chest") && // Không đặt lên rương
+      !block.name.includes("furnace") && // Không đặt lên lò
+      !block.name.includes("crafting_table"), // Không đặt lên bàn chế tạo
     point: searchPoint,
     maxDistance: CHECK_DISTANCE,
     count: 30,
   });
 
   let bestPlacement = null;
-  let minDistanceSq = CHECK_DISTANCE * CHECK_DISTANCE;
+  let minDistanceSq = CHECK_DISTANCE * CHECK_DISTANCE; // Tìm điểm gần nhất trong tầm
 
   for (const pos of nearbySolidBlocks) {
     const wallBlock = botInstance.blockAt(pos);
     if (!wallBlock || !wallBlock.position) continue;
 
     for (const { face, vector } of placeableFacesData) {
-      const torchPos = wallBlock.position.plus(vector);
+      const torchPos = wallBlock.position.plus(vector); // Vị trí dự kiến của đuốc
       const blockAtTorchPos = botInstance.blockAt(torchPos);
 
+      // Chỉ đặt vào khối air
       if (blockAtTorchPos && blockAtTorchPos.name === "air") {
-        if (!botInstance.entity || !botInstance.entity.position) continue;
+        if (!botInstance.entity || !botInstance.entity.position) continue; // Cần vị trí bot để tính khoảng cách
+
+        // Tính khoảng cách từ bot đến vị trí đuốc tiềm năng
         const distSq = botInstance.entity.position.distanceSquared(torchPos);
 
+        // Phải đủ gần bot để đặt (tầm với ~4.5) và gần hơn điểm tốt nhất hiện tại
         if (distSq <= 4.5 * 4.5 && distSq < minDistanceSq) {
-          // *** KIỂM TRA ĐUỐC GẦN ***
-          const nearbyTorches = botInstance.findBlocks({
-            point: torchPos,
-            matching: (block) =>
-              block && (block.name === "torch" || block.name === "wall_torch"),
-            maxDistance: MIN_TORCH_DISTANCE,
-            count: 1,
-          });
-
-          if (Array.isArray(nearbyTorches) && nearbyTorches.length === 0) {
-            minDistanceSq = distSq;
-            bestPlacement = {
-              block: wallBlock,
-              faceVector: vector,
-              position: torchPos,
-            };
-          }
+          // Kiểm tra ánh sáng và đuốc gần tại vị trí sẽ đặt
+           const canPlaceWallTorch = await canPlaceWallTorchCheck(torchPos);
+           if(canPlaceWallTorch){
+                minDistanceSq = distSq;
+                bestPlacement = {
+                  block: wallBlock, // Khối tường để đặt lên
+                  faceVector: vector, // Mặt của khối tường đó
+                  position: torchPos, // Tọa độ của khối air nơi đuốc sẽ xuất hiện
+                };
+           }
         }
       }
     }
   }
-  if (!bestPlacement) {
-    // Chỉ log nếu thực sự không tìm thấy vị trí nào hợp lệ (kể cả vụ đuốc gần)
-  }
+  // if (!bestPlacement) console.log("[Auto Torch] Không tìm thấy vị trí tường hợp lệ gần đó.");
   return bestPlacement;
 }
 
-// *** HÀM VALIDATE VÀ ĐẶT ĐUỐC - GIỮ NGUYÊN ***
+// Kiểm tra điều kiện trước khi đặt đuốc lên tường
+async function canPlaceWallTorchCheck(potentialTorchPos) {
+    if (!potentialTorchPos) return false;
+
+    const blockAtPlacement = botInstance.blockAt(potentialTorchPos);
+    if (!blockAtPlacement) {
+        // console.warn(`[Auto Torch Wall Check] Không thể lấy thông tin khối tại ${formatCoords(potentialTorchPos)}.`);
+        return false;
+    }
+
+    // Kiểm tra ánh sáng tại vị trí đặt tiềm năng
+    if (blockAtPlacement.light >= PLACEMENT_LIGHT_THRESHOLD) {
+        // console.log(`[Auto Torch Wall Check] Bỏ qua, ánh sáng tại ${formatCoords(potentialTorchPos)} là ${blockAtPlacement.light} (>= ${PLACEMENT_LIGHT_THRESHOLD})`);
+        return false;
+    }
+
+    // Kiểm tra đuốc gần vị trí đặt tiềm năng
+    const nearbyTorches = botInstance.findBlocks({
+        point: potentialTorchPos,
+        matching: (block) => block && (block.name === "torch" || block.name === "wall_torch"),
+        maxDistance: MIN_TORCH_DISTANCE,
+        count: 1,
+    });
+    if (Array.isArray(nearbyTorches) && nearbyTorches.length > 0) {
+        // console.log(`[Auto Torch Wall Check] Bỏ qua, đã có đuốc gần tại ${formatCoords(nearbyTorches[0].position)}`);
+        return false;
+    }
+
+    return true; // Có thể đặt
+}
+
+
+// Xác thực và thực hiện đặt đuốc
 async function validateAndPlaceTorch(placeTarget, torchItem) {
   if (
-    !placeTarget ||
-    !placeTarget.position ||
-    !placeTarget.block ||
-    !placeTarget.faceVector ||
-    !torchItem
+    !placeTarget || !placeTarget.position || !placeTarget.block ||
+    !placeTarget.faceVector || !torchItem
   ) {
-    console.warn("[Auto Torch] Dữ liệu đặt không hợp lệ.");
+    console.warn("[Auto Torch Validate] Dữ liệu đặt không hợp lệ.");
     return false;
   }
 
@@ -319,473 +412,187 @@ async function validateAndPlaceTorch(placeTarget, torchItem) {
   const blockToPlaceOn = placeTarget.block;
   const faceToPlaceOn = placeTarget.faceVector;
 
+  // Kiểm tra tầm với lần cuối (dù logic tìm kiếm đã cố gắng đảm bảo)
   if (!botInstance.entity || !botInstance.entity.position) {
-    console.warn(
-      "[Auto Torch] Không thể xác định vị trí bot để kiểm tra tầm với."
-    );
+    // console.warn("[Auto Torch Validate] Không thể xác định vị trí bot để kiểm tra tầm với.");
     return false;
   }
-  const distanceSq =
-    botInstance.entity.position.distanceSquared(potentialTorchPos);
+  const distanceSq = botInstance.entity.position.distanceSquared(potentialTorchPos);
+  // Cho phép xa hơn một chút phòng trường hợp đặt dưới chân hoặc tường hơi xa
   if (distanceSq > 5.0 * 5.0) {
+    // console.log(`[Auto Torch Validate] Vị trí đặt ${formatCoords(potentialTorchPos)} quá xa (distSq: ${distanceSq.toFixed(2)}).`);
     return false;
   }
 
+  // Kiểm tra lại ánh sáng và đuốc gần (đã được kiểm tra bởi canPlace... nhưng chắc ăn)
   const blockAtPlacement = botInstance.blockAt(potentialTorchPos);
   if (!blockAtPlacement) {
-    console.warn(
-      `[Auto Torch] Không thể lấy thông tin khối tại vị trí đặt ${formatCoords(
-        potentialTorchPos
-      )}.`
-    );
+    // console.warn(`[Auto Torch Validate] Không thể lấy thông tin khối tại vị trí đặt ${formatCoords(potentialTorchPos)}.`);
     return false;
   }
   if (blockAtPlacement.light >= PLACEMENT_LIGHT_THRESHOLD) {
+    // console.log(`[Auto Torch Validate] Ánh sáng tại vị trí đặt ${formatCoords(potentialTorchPos)} là ${blockAtPlacement.light}, quá cao.`);
     return false;
   }
-
-  // Kiểm tra lại đuốc gần như một lớp bảo vệ cuối cùng (dù không cần thiết nếu tìm kiếm đúng)
   const nearbyTorches = botInstance.findBlocks({
     point: potentialTorchPos,
-    matching: (block) =>
-      block && (block.name === "torch" || block.name === "wall_torch"),
+    matching: (block) => block && (block.name === "torch" || block.name === "wall_torch"),
     maxDistance: MIN_TORCH_DISTANCE,
     count: 1,
   });
   if (Array.isArray(nearbyTorches) && nearbyTorches.length > 0) {
-    // Không nên log lỗi ở đây vì hàm tìm kiếm đã lọc rồi, nếu vào đây có thể do race condition
-    // console.log(`[Auto Torch] Hủy đặt (Validate): Đã có đuốc khác quá gần tại ${formatCoords(nearbyTorches[0])}.`);
+    // console.log(`[Auto Torch Validate] Đã có đuốc khác quá gần tại ${formatCoords(nearbyTorches[0].position)}.`);
     return false;
   }
 
+  // Thực hiện đặt
   try {
+    // Đảm bảo đang cầm đuốc
     if (!botInstance.heldItem || botInstance.heldItem.type !== torchItem.type) {
+      // console.log("[Auto Torch Validate] Đang trang bị đuốc...");
       await botInstance.equip(torchItem, "hand");
-      await sleep(200);
+      await sleep(250); // Chờ equip xong
     }
 
+    // Nhìn vào khối sẽ đặt (quan trọng để placeBlock hoạt động ổn định)
+    // await botInstance.lookAt(blockToPlaceOn.position.offset(0.5, 0.5, 0.5), true); // Nhìn vào giữa khối
+    // await sleep(100); // Chờ nhìn xong
+
+    // Đặt khối
+    // console.log(`[Auto Torch Validate] Thực hiện placeBlock lên ${blockToPlaceOn.name} tại ${formatCoords(blockToPlaceOn.position)} với face ${formatCoords(faceToPlaceOn)}`);
     await botInstance.placeBlock(blockToPlaceOn, faceToPlaceOn);
-    return true;
+    // console.log("[Auto Torch Validate] Lệnh placeBlock đã gửi.");
+    await sleep(150); // Chờ server xử lý đặt block
+    return true; // Giả định thành công nếu không có lỗi
+
   } catch (placeError) {
-    if (
-      placeError.message.includes("Must be targeting a block") ||
-      placeError.message.includes("rejected transaction") ||
-      placeError.message.includes("Server misbehaved")
-    ) {
-      console.warn(
-        "[Auto Torch] Lỗi server hoặc mục tiêu không hợp lệ khi đặt đuốc."
-      );
+    console.warn(`[Auto Torch Validate] Lỗi khi đặt đuốc: ${placeError.message}`);
+    if ( placeError.message.includes("Must be targeting a block") || placeError.message.includes("rejected transaction") || placeError.message.includes("Server misbehaved") || placeError.message.includes("invalid direction"))
+    {
+      // Lỗi thường gặp, không cần log stack
+    } else {
+        console.error(placeError.stack); // Log stack cho lỗi lạ
     }
     return false;
   }
 }
 
-// *** HÀM TẠO KHỐI - GIỮ NGUYÊN ***
+// Tạo khối và đặt đuốc lên
 async function tryCreateAndPlaceTorch(torchItem) {
-  const createBlockInfo =
-    botInstance.registry.itemsByName[CREATE_SPOT_BLOCK_NAME];
+  const createBlockInfo = botInstance.registry.itemsByName[CREATE_SPOT_BLOCK_NAME];
   if (!createBlockInfo) {
+    // console.warn(`[Auto Torch Create] Không tìm thấy thông tin cho khối ${CREATE_SPOT_BLOCK_NAME}.`);
     return false;
   }
 
-  const createBlockItem = botInstance.inventory.findInventoryItem(
-    createBlockInfo.id
-  );
+  const createBlockItem = botInstance.inventory.findInventoryItem(createBlockInfo.id);
   if (!createBlockItem) {
+    // console.log(`[Auto Torch Create] Không có ${CREATE_SPOT_BLOCK_NAME} trong túi đồ.`);
     return false;
   }
 
   const botPos = botInstance.entity.position;
   if (!botPos) return false;
 
-  let placementBaseBlock = null;
-  let placePos = null;
-  let bestDistSq = 3 * 3;
+  let placementBaseBlock = null; // Khối dưới đất để đặt khối mới lên
+  let placePos = null; // Vị trí của khối mới sẽ tạo
+  let bestDistSq = 3 * 3; // Tìm vị trí gần nhất trong phạm vi 3x3
 
+  // Các vị trí xung quanh bot (ưu tiên ngang tầm)
   const offsets = [
-    { x: 1, z: 0 },
-    { x: -1, z: 0 },
-    { x: 0, z: 1 },
-    { x: 0, z: -1 },
-    { x: 1, z: 1 },
-    { x: 1, z: -1 },
-    { x: -1, z: 1 },
-    { x: -1, z: -1 },
+    { x: 1, z: 0 }, { x: -1, z: 0 }, { x: 0, z: 1 }, { x: 0, z: -1 },
+    { x: 1, z: 1 }, { x: 1, z: -1 }, { x: -1, z: 1 }, { x: -1, z: -1 },
   ];
 
+  // Tìm vị trí tốt nhất để tạo khối
   for (const offset of offsets) {
-    const checkPlacePos = botPos.offset(offset.x, 0, offset.z).floored();
-    const checkBasePos = checkPlacePos.offset(0, -1, 0);
+    const checkPlacePos = botPos.offset(offset.x, 0, offset.z).floored(); // Vị trí ngang tầm bot
+    const checkBasePos = checkPlacePos.offset(0, -1, 0); // Vị trí khối ngay dưới đó
 
-    const blockAtPlace = botInstance.blockAt(checkPlacePos);
-    const blockAtBase = botInstance.blockAt(checkBasePos);
+    const blockAtPlace = botInstance.blockAt(checkPlacePos); // Khối tại vị trí ngang tầm
+    const blockAtBase = botInstance.blockAt(checkBasePos); // Khối dưới đất
 
-    if (
-      blockAtBase &&
-      blockAtBase.boundingBox === "block" &&
-      blockAtBase.position &&
-      blockAtPlace &&
-      blockAtPlace.name === "air"
-    ) {
+    // Cần: Khối dưới đất phải rắn, vị trí ngang tầm phải là air
+    if ( blockAtBase && blockAtBase.boundingBox === "block" && blockAtBase.position &&
+         blockAtPlace && blockAtPlace.name === "air" )
+    {
       const distSq = checkPlacePos.distanceSquared(botPos);
+      // Phải đủ gần để đặt (<4.5) và gần hơn điểm tốt nhất hiện tại
       if (distSq <= 4.5 * 4.5 && distSq < bestDistSq) {
+        // Kiểm tra xem có thể đặt khối MỚI lên khối base không
         if (blockAtBase.canPlaceOn) {
-          try {
-            if (
-              await botInstance.canPlaceBlock(blockAtBase, new Vec3(0, 1, 0))
-            ) {
-              placementBaseBlock = blockAtBase;
-              placePos = checkPlacePos;
-              bestDistSq = distSq;
-            }
-          } catch (e) {
-            /* Bỏ qua lỗi */
-          }
+            try {
+                // canPlaceBlock không tin cậy 100%, nhưng vẫn nên thử
+                 if (await botInstance.canPlaceBlock(blockAtBase, new Vec3(0, 1, 0))) {
+                    placementBaseBlock = blockAtBase;
+                    placePos = checkPlacePos; // Lưu vị trí sẽ tạo khối
+                    bestDistSq = distSq;
+                 }
+            } catch (e) { /* Bỏ qua lỗi canPlaceBlock */ }
         }
       }
     }
   }
 
+  // Không tìm được chỗ thích hợp để tạo khối
   if (!placementBaseBlock || !placePos) {
+    // console.log("[Auto Torch Create] Không tìm thấy vị trí phù hợp để tạo khối.");
     return false;
   }
 
+  // Tiến hành tạo khối
   try {
-    if (
-      !botInstance.heldItem ||
-      botInstance.heldItem.type !== createBlockItem.type
-    ) {
+    // Cầm khối cần tạo
+    if (!botInstance.heldItem || botInstance.heldItem.type !== createBlockItem.type) {
+      // console.log(`[Auto Torch Create] Trang bị ${CREATE_SPOT_BLOCK_NAME}...`);
       await botInstance.equip(createBlockItem, "hand");
-      await sleep(200);
+      await sleep(250);
     }
-    const placeVector = new Vec3(0, 1, 0);
-    await botInstance.placeBlock(placementBaseBlock, placeVector);
-    await sleep(400);
 
+    // Đặt khối tạo điểm tựa
+    const placeVector = new Vec3(0, 1, 0); // Đặt lên trên khối base
+    // console.log(`[Auto Torch Create] Đặt ${CREATE_SPOT_BLOCK_NAME} lên ${placementBaseBlock.name} tại ${formatCoords(placementBaseBlock.position)}...`);
+    await botInstance.placeBlock(placementBaseBlock, placeVector);
+    await sleep(400); // Chờ khối xuất hiện
+
+    // Kiểm tra xem khối đã được tạo thành công chưa
     const newBlock = botInstance.blockAt(placePos);
-    if (
-      !newBlock ||
-      newBlock.name !== CREATE_SPOT_BLOCK_NAME ||
-      !newBlock.position
-    ) {
+    if (!newBlock || newBlock.name !== CREATE_SPOT_BLOCK_NAME || !newBlock.position) {
+      // console.warn(`[Auto Torch Create] Đã gửi lệnh nhưng không thấy khối ${CREATE_SPOT_BLOCK_NAME} tại ${formatCoords(placePos)}.`);
       return false;
     }
-    console.log(
-      `[Auto Torch] Đã đặt ${CREATE_SPOT_BLOCK_NAME} thành công. Giờ đặt đuốc lên trên...`
-    );
+    // console.log(`[Auto Torch Create] Đã tạo ${CREATE_SPOT_BLOCK_NAME} tại ${formatCoords(placePos)}. Giờ đặt đuốc lên trên...`);
 
+    // Chuẩn bị để đặt đuốc lên khối vừa tạo
     const torchPlaceTarget = {
-      block: newBlock,
-      faceVector: new Vec3(0, 1, 0),
-      position: newBlock.position.plus(new Vec3(0, 1, 0)),
+      block: newBlock, // Đặt lên khối mới tạo
+      faceVector: new Vec3(0, 1, 0), // Đặt lên mặt trên của nó
+      position: newBlock.position.plus(new Vec3(0, 1, 0)), // Vị trí của đuốc
     };
 
-    // Hàm validate sẽ kiểm tra ánh sáng và đuốc gần (quanh khối mới)
+    // Gọi hàm validate để kiểm tra ánh sáng/đuốc gần và đặt
     return await validateAndPlaceTorch(torchPlaceTarget, torchItem);
+
   } catch (createError) {
-    console.error(
-      `[Auto Torch] Lỗi khi tạo khối ${CREATE_SPOT_BLOCK_NAME} tại ${formatCoords(
-        placePos
-      )}:`,
-      createError.message
-    );
-    if (createError.message.includes("Must be targeting a block")) {
-      console.warn(
-        "[Auto Torch] Lỗi 'Must be targeting a block' khi tạo khối."
-      );
-    }
+    // console.warn(`[Auto Torch Create] Lỗi khi tạo khối ${CREATE_SPOT_BLOCK_NAME} tại ${formatCoords(placePos)}: ${createError.message}`);
+    // if (createError.message.includes("Must be targeting a block")) console.warn("[Auto Torch Create] Lỗi 'Must be targeting a block'.");
     return false;
   }
 }
 
-// *** HÀM TÌM KIẾM XA HƠN ĐÃ SỬA - THÊM KIỂM TRA ĐUỐC GẦN ***
-async function findValidTorchPlacementFurther(searchPoint, maxDist) {
-  if (!botInstance || !botInstance.version || !searchPoint) return null;
-
-  const placeableFacesData = [
-    { face: 2, vector: new Vec3(0, 0, 1) },
-    { face: 3, vector: new Vec3(0, 0, -1) },
-    { face: 4, vector: new Vec3(1, 0, 0) },
-    { face: 5, vector: new Vec3(-1, 0, 0) },
-  ];
-
-  const nearbySolidBlocks = botInstance.findBlocks({
-    matching: (block) =>
-      block &&
-      block.boundingBox === "block" &&
-      block.name !== "air" &&
-      !block.name.includes("torch") &&
-      !block.name.includes("sign") &&
-      !block.name.includes("door") &&
-      !block.name.includes("gate"),
-    point: searchPoint,
-    maxDistance: maxDist,
-    count: 70,
-  });
-
-  let bestPlacement = null;
-  let minDistanceSq = maxDist * maxDist;
-
-  for (const pos of nearbySolidBlocks) {
-    const wallBlock = botInstance.blockAt(pos);
-    if (!wallBlock || !wallBlock.position) continue;
-
-    for (const { face, vector } of placeableFacesData) {
-      const torchPos = wallBlock.position.plus(vector);
-      const blockAtTorchPos = botInstance.blockAt(torchPos);
-
-      if (blockAtTorchPos && blockAtTorchPos.name === "air") {
-        if (!botInstance.entity || !botInstance.entity.position) continue;
-        const distSq = botInstance.entity.position.distanceSquared(torchPos);
-
-        if (distSq < minDistanceSq) {
-          // *** KIỂM TRA ĐUỐC GẦN ***
-          const nearbyTorches = botInstance.findBlocks({
-            point: torchPos,
-            matching: (block) =>
-              block && (block.name === "torch" || block.name === "wall_torch"),
-            maxDistance: MIN_TORCH_DISTANCE,
-            count: 1,
-          });
-
-          if (Array.isArray(nearbyTorches) && nearbyTorches.length === 0) {
-            minDistanceSq = distSq;
-            bestPlacement = {
-              block: wallBlock,
-              faceVector: vector,
-              position: torchPos,
-            };
-          }
-        }
-      }
-    }
-  }
-  if (!bestPlacement) {
-    // Log nếu không tìm thấy vị trí nào xa hơn hợp lệ
-  }
-  return bestPlacement;
-}
-
-// *** HÀM DI CHUYỂN VÀ ĐẶT - GIỮ NGUYÊN ***
-async function findAndMoveToPlaceTorch(torchItem) {
-  if (!botInstance.pathfinder) {
-    console.warn(
-      "[Auto Torch] Pathfinder không khả dụng, không thể thực hiện di chuyển để đặt đuốc."
-    );
-    return false; // Trả về false vì không thể di chuyển
-  }
-
-  let GoalNear;
-  try {
-    GoalNear = require("mineflayer-pathfinder").goals.GoalNear;
-  } catch (e) {
-    console.error("[Auto Torch] Không thể load GoalNear từ pathfinder.");
-    return false; // Trả về false vì thiếu goal
-  }
-
-  if (!botInstance.entity || !botInstance.entity.position) {
-    console.warn(
-      "[Auto Torch] Không thể xác định vị trí bot để tìm kiếm xa hơn."
-    );
-    return false; // Trả về false vì thiếu vị trí bot
-  }
-
-  // --- Tìm kiếm vị trí ---
-  // Hàm này vẫn dùng await nhưng thường nhanh hơn goto
-  const furtherPlaceTarget = await findValidTorchPlacementFurther(
-    botInstance.entity.position,
-    SEARCH_FURTHER_DISTANCE
-  );
-
-  if (
-    !furtherPlaceTarget ||
-    !furtherPlaceTarget.position ||
-    !furtherPlaceTarget.block ||
-    !furtherPlaceTarget.faceVector
-  ) {
-    // Log đã có trong hàm tìm kiếm
-    // console.log("[Auto Torch] Không tìm thấy vị trí đặt tiềm năng nào xa hơn hợp lệ.");
-    return false; // Trả về false vì không tìm thấy chỗ đặt
-  }
-
-  const targetTorchPos = furtherPlaceTarget.position;
-  const goal = new GoalNear(
-    targetTorchPos.x,
-    targetTorchPos.y,
-    targetTorchPos.z,
-    2
-  );
-
-  console.log(
-    `[Auto Torch] Tìm thấy vị trí tiềm năng xa hơn tại ${formatCoords(
-      targetTorchPos
-    )}. Bắt đầu di chuyển...`
-  );
-
-  // --- Sử dụng Promise để quản lý kết quả không đồng bộ ---
-  return new Promise((resolve) => {
-    let moveTimeout; // Timer để hủy nếu di chuyển quá lâu
-    let listenersAttached = false;
-
-    // Hàm dọn dẹp listener
-    const cleanupListeners = () => {
-      if (!listenersAttached) return;
-      // console.log("[Auto Torch Move] Cleaning up pathfinder listeners."); // Debug log
-      botInstance.pathfinder.removeListener("goal_reached", onGoalReached);
-      botInstance.removeListener("path_update", onPathUpdate); // Hoặc sự kiện lỗi khác nếu pathfinder dùng 'error'
-      botInstance.removeListener("error", onPathError); // Bắt lỗi chung của bot cũng có thể liên quan
-      botInstance.removeListener("path_reset", onPathReset); // Khi path bị reset
-      botInstance.removeListener("goal_updated", onGoalUpdated); // Khi mục tiêu bị ghi đè?
-      clearTimeout(moveTimeout);
-      listenersAttached = false;
-    };
-
-    // --- Các hàm xử lý sự kiện ---
-    const onGoalReached = async () => {
-      console.log(
-        `[Auto Torch] Đã đến gần vị trí ${formatCoords(
-          targetTorchPos
-        )}. Thử đặt đuốc...`
-      );
-      cleanupListeners();
-      await sleep(300); // Chờ ổn định
-      const placed = await validateAndPlaceTorch(furtherPlaceTarget, torchItem);
-      if (!placed) {
-        console.log(
-          "[Auto Torch] Đã đến nơi nhưng đặt đuốc thất bại (validate/place)."
-        );
-      }
-      resolve(placed); // Giải quyết Promise với kết quả đặt đuốc
-    };
-
-    const onPathUpdate = (results) => {
-      // Có thể dùng để kiểm tra nếu path không thể hoàn thành sớm
-      if (results.status === "noPath") {
-        console.log(
-          `[Auto Torch] Không tìm thấy đường đi đến ${formatCoords(
-            targetTorchPos
-          )} (Path Update).`
-        );
-        cleanupListeners();
-        resolve(false); // Giải quyết Promise là thất bại
-      }
-    };
-
-    const onPathError = (err) => {
-      // Kiểm tra xem lỗi có liên quan đến pathfinding không
-      // Điều này hơi khó vì sự kiện 'error' của bot là chung chung
-      // Có thể cần kiểm tra err.message hoặc loại lỗi
-      if (
-        err &&
-        (err.message.toLowerCase().includes("path") ||
-          err.message.toLowerCase().includes("goal"))
-      ) {
-        console.error(
-          `[Auto Torch] Lỗi Pathfinder khi di chuyển: ${err.message}`
-        );
-        cleanupListeners();
-        resolve(false); // Giải quyết Promise là thất bại
-      }
-    };
-
-    const onPathReset = (reason) => {
-      // Lý do có thể là 'goal_updated', 'move_interrupt', 'block_updated', etc.
-      console.log(
-        `[Auto Torch] Di chuyển bị đặt lại/gián đoạn. Lý do: ${
-          reason || "Không rõ"
-        }`
-      );
-      // Nếu bị gián đoạn bởi thứ khác, coi như thất bại cho auto torch lần này
-      cleanupListeners();
-      resolve(false);
-    };
-
-    const onGoalUpdated = (newGoal) => {
-      // Ai đó đã đặt mục tiêu mới cho pathfinder!
-      console.warn(
-        `[Auto Torch] Mục tiêu di chuyển bị ghi đè! Hủy đặt đuốc tự động.`
-      );
-      cleanupListeners();
-      resolve(false);
-    };
-
-    // --- Thiết lập di chuyển và gắn listener ---
-    try {
-      // Gắn listener TRƯỚC KHI setGoal để không bỏ lỡ sự kiện
-      botInstance.pathfinder.once("goal_reached", onGoalReached);
-      botInstance.on("path_update", onPathUpdate); // Có thể phát ra nhiều lần
-      botInstance.on("error", onPathError); // Lắng nghe lỗi chung
-      botInstance.on("path_reset", onPathReset); // Lắng nghe reset
-      botInstance.on("goal_updated", onGoalUpdated); // Lắng nghe mục tiêu bị đổi
-      listenersAttached = true;
-      // console.log("[Auto Torch Move] Listeners attached."); // Debug log
-
-      // Đặt mục tiêu (NON-BLOCKING)
-      botInstance.pathfinder.setGoal(goal);
-
-      // Đặt timeout để tránh chờ đợi vô hạn nếu bị kẹt hoặc sự kiện không được kích hoạt
-      moveTimeout = setTimeout(() => {
-        if (listenersAttached) {
-          // Chỉ hủy nếu listener vẫn còn đó
-          console.warn(
-            `[Auto Torch] Hết thời gian chờ di chuyển đến ${formatCoords(
-              targetTorchPos
-            )}. Hủy bỏ.`
-          );
-          cleanupListeners();
-          if (botInstance.pathfinder.isMoving()) {
-            botInstance.pathfinder.stop(); // Cố gắng dừng nếu đang di chuyển
-          }
-          resolve(false); // Giải quyết Promise là thất bại
-        }
-      }, 20000); // Chờ tối đa 20 giây
-
-      // Quan trọng: Hàm này không còn trả về kết quả đặt đuốc trực tiếp nữa
-      // Nó trả về một Promise sẽ được giải quyết bởi các listener sự kiện
-      // resolve(true); // <-- XÓA DÒNG NÀY, KHÔNG RESOLVE NGAY LẬP TỨC
-      // Bản thân hàm findAndMoveToPlaceTorch sẽ kết thúc ngay sau khi setGoal
-      // và trả về Promise đang chờ các listener giải quyết nó.
-      // Hàm checkAndPlaceTorch sẽ nhận được Promise này nhưng không await nó
-      // mà sẽ return false ngay lập tức, vì kết quả chưa có.
-    } catch (setupError) {
-      console.error(
-        `[Auto Torch] Lỗi khi thiết lập di chuyển hoặc listener: ${setupError.message}`
-      );
-      cleanupListeners(); // Dọn dẹp nếu lỗi ngay từ đầu
-      resolve(false); // Giải quyết Promise là thất bại
-    }
-  }); // Kết thúc new Promise
-
-  // <<< QUAN TRỌNG: Logic mới cho hàm gọi >>>
-  // Hàm findAndMoveToPlaceTorch giờ trả về một Promise, nhưng hàm checkAndPlaceTorch
-  // không nên await nó vì nó không chặn. checkAndPlaceTorch sẽ coi như việc
-  // di chuyển đã bắt đầu và sẽ return false cho lần kiểm tra hiện tại.
-  // Kết quả thực sự sẽ được xử lý bởi các listener.
-  return false; // <<<< LUÔN TRẢ VỀ FALSE NGAY LẬP TỨC
-  // vì việc di chuyển và đặt đuốc sẽ diễn ra trong nền.
-  // isProcessingAutoTorch sẽ ngăn lần kiểm tra tiếp theo
-  // cho đến khi Promise được giải quyết (dù thành công hay thất bại).
-  // Cần đảm bảo isProcessingAutoTorch được reset trong cleanupListeners
-  // hoặc sau khi resolve Promise. --> Chỉnh sửa checkAndPlaceTorch
-} // Kết thúc hàm findAndMoveToPlaceTorch
-
-// *** HÀM FORMAT COORDS - GIỮ NGUYÊN ***
+// Format tọa độ cho log
 function formatCoords(pos) {
-  if (
-    !pos ||
-    typeof pos.x !== "number" ||
-    typeof pos.y !== "number" ||
-    typeof pos.z !== "number"
-  ) {
+  if (!pos || typeof pos.x !== "number" || typeof pos.y !== "number" || typeof pos.z !== "number") {
     return "N/A";
   }
   return `(${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)})`;
 }
 
-// *** EXPORTS - GIỮ NGUYÊN ***
+// --- Exports ---
 module.exports = {
   initializeAutoTorch,
   checkAndPlaceTorch,
+  // Getter để kiểm tra trạng thái từ bên ngoài nếu cần
   get isProcessingAutoTorch() {
     return isProcessingAutoTorch;
   },

@@ -21,7 +21,7 @@ const ITEM_BLACKLIST = new Set([
     'wheat_seeds', 'melon_seeds', 'pumpkin_seeds', 'beetroot_seeds',
     'nether_wart', 'cocoa_beans', 'string', 'spider_eye',
     'poisonous_potato', 'pufferfish', 'rotten_flesh', 'chorus_fruit',
-    'suspicious_stew', 'wheat', 'feather'
+    'suspicious_stew', 'wheat', 'feather', 'glow_ink_sac'
 ]);
 
 const HUNTABLE_FOOD_MOBS = new Set(['cow', 'pig', 'sheep', 'chicken', 'rabbit']);

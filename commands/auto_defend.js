@@ -1,165 +1,241 @@
-// --- START OF FILE commands/auto_defend.js ---
-const { goals: { GoalFollow, GoalBlock, GoalXZ, GoalNear, GoalInvert } } = require('mineflayer-pathfinder');
-const { Vec3 } = require('vec3');
 
+// --- START OF FILE commands/auto_defend.js (Final PvP - No Auto-Eat Logic) ---
+const { goals: { GoalFollow, GoalBlock, GoalNear, GoalInvert } } = require('mineflayer-pathfinder');
+const { Vec3 } = require('vec3');
+const { formatCoords, sleep, isBlockSolid, isBlockDangerous } = require('../utils');
+
+// ====================================
 // --- Configuration ---
-const HOSTILE_SCAN_RADIUS = 20;
-const PLAYER_SCAN_RADIUS = 5;
-const VERY_CLOSE_THRESHOLD_SQ = 16; // 4m*4m = 16
-const LIKELY_ATTACKER_RANGE_SQ = 144; // 8m*8m = 64
-const DEFEND_TIMEOUT = 20 * 1000; // Tổng thời gian phòng thủ tối đa (cả đánh và chạy)
-const FLEE_DISTANCE_RANDOM = 15; // Chỉ dùng khi chạy ngẫu nhiên
-const SAFE_DISTANCE = 20; // Khoảng cách an toàn mong muốn khi chạy trốn bằng GoalInvert (giảm chút)
-const SAFE_DISTANCE_SQ = SAFE_DISTANCE * SAFE_DISTANCE; // Tính sẵn bình phương
-const COMBAT_DISTANCE = 4.5;
-const FOLLOW_DISTANCE = 4;
-const LOOK_INTERVAL = 250;
-const ATTACK_INTERVAL = 300;
-const FLEE_CHECK_INTERVAL = 500; // Tần suất kiểm tra khi đang chạy trốn (ms)
+// ====================================
+const ENABLE_SHIELD = true;
+const ENABLE_KITING = true;
+const ENABLE_RANGED = true;
+const ENABLE_STRAFING = true;
+const ENABLE_PVP_HEALING = true;
+const ENABLE_PVP_AXE_VS_SHIELD = true;
+const ENABLE_FLEE_SHOOT = false;
+
+const PVP_FLEE_HEALTH_THRESHOLD = 8;
+const FLEE_INSTEAD_OF_FIGHT_HEALTH = 6; // Ngưỡng máu chạy áp dụng cho cả mob
+// const FLEE_WHEN_HUNGRY = false; // <<<< ĐÃ XÓA BỎ LOGIC NÀY
+// const LOW_FOOD_THRESHOLD = 1;  // <<<< ĐÃ XÓA BỎ LOGIC NÀY
+const HEALING_POTION_NAMES = ['potion_of_healing', 'potion_of_regeneration', 'splash_potion_of_healing', 'splash_potion_of_regeneration'];
+const HEALING_FOOD_NAMES = ['golden_apple', 'enchanted_golden_apple'];
+const HEAL_RETREAT_DISTANCE = 3;
+const HEAL_TIMEOUT = 1500;
+
+const SHIELD_DETECTION_MISSES = 5;
+const CREEPER_FLEE_DISTANCE = 10;
+const RANGED_WEAPON_MIN_DIST = 6;
+const RANGED_WEAPON_MAX_DIST = 25;
+const KITING_BACKUP_DIST = 1.0;
+const STRAFE_INTERVAL = 700;
+const STRAFE_DURATION = 350;
+
+const HOSTILE_SCAN_RADIUS = 25;
+const PLAYER_SCAN_RADIUS = 15;
+const VERY_CLOSE_THRESHOLD_SQ = 16;
+const LIKELY_ATTACKER_RANGE_SQ = 196;
+const DEFEND_TIMEOUT = 30 * 1000;
+const SAFE_DISTANCE = 18;
+const SAFE_DISTANCE_SQ = SAFE_DISTANCE * SAFE_DISTANCE;
+const COMBAT_DISTANCE = 5;
+const PVP_FOLLOW_DISTANCE = 5;
+const FOLLOW_DISTANCE = 5;
+const LOOK_INTERVAL = 150;
+const ATTACK_INTERVAL = 500;
+const RANGED_ATTACK_INTERVAL = 1500;
+const FLEE_CHECK_INTERVAL = 400;
 
 const WEAPON_PRIORITY = [
     'netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'wooden_sword',
-    'netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'wooden_axe'
+    'netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'wooden_axe',
+    'bow', 'crossbow', 'trident'
 ];
+const AXE_PRIORITY = WEAPON_PRIORITY.filter(w => w.includes('_axe'));
+const SWORD_PRIORITY = WEAPON_PRIORITY.filter(w => w.includes('_sword'));
+const MELEE_WEAPON_PRIORITY = [...SWORD_PRIORITY, ...AXE_PRIORITY];
+const RANGED_PRIORITY = WEAPON_PRIORITY.filter(w => w.includes('bow') || w.includes('crossbow') || w.includes('trident'));
+const AMMUNITION = ['arrow', 'spectral_arrow', 'tipped_arrow'];
 
 // --- State Variables ---
 let botInstance = null;
 let stopAllTasksFn = null;
 let isDefending = false;
-let defendingTarget = null; // Kẻ địch đang nhắm tới
-let combatInterval = null;  // Interval cho logic chiến đấu
-let lookInterval = null;    // Interval để nhìn kẻ địch
-let fleeCheckInterval = null; // <<<< MỚI: Interval để kiểm tra khi đang chạy trốn
-let defenseStartTime = 0;  // <<<< MỚI: Thời điểm bắt đầu phòng thủ (cho timeout chung)
-let lastAttackTime = 0;
-let lastHurtProcessedTime = 0;
-const HURT_PROCESS_COOLDOWN = 2000;
+let defendingTarget = null;
+let combatInterval = null; let lookInterval = null; let fleeCheckInterval = null; let strafeInterval = null;
+let currentStrafeDir = 0; let defenseStartTime = 0; let lastAttackTime = 0; let lastRangedAttackTime = 0;
+let lastHurtProcessedTime = 0; const HURT_PROCESS_COOLDOWN = 2500;
+let isShieldActive = false;
+let consecutiveMeleeMisses = 0;
+let isAttemptingHeal = false;
+let softBlockTypes = new Set();
 
-// --- Utility Functions (Keep formatCoords and findBestWeapon) ---
-function formatCoords(pos) {
-    if (!pos) return 'N/A';
-    return `(${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)})`;
-}
+// --- Utility Functions ---
+// (formatCoords, sleep, isBlockSolid, isBlockDangerous được import)
 
-function findBestWeapon() {
-    let bestWeapon = null;
-    let bestPriority = WEAPON_PRIORITY.length;
-    if (!botInstance || !botInstance.inventory) return null;
+function findBestWeapon(weaponList = WEAPON_PRIORITY) {
+    let bestWeapon = null; let bestPriority = weaponList.length;
+    if (!botInstance?.inventory) return null;
     for (const item of botInstance.inventory.items()) {
-        if (!item || !item.name) continue;
-        const priority = WEAPON_PRIORITY.findIndex(namePart => item.name.includes(namePart));
-        if (priority !== -1 && priority < bestPriority) {
-            bestPriority = priority;
-            bestWeapon = item;
-        }
+        if (!item?.name) continue;
+        const priority = weaponList.findIndex(weaponName => item.name === weaponName);
+        if (priority !== -1 && priority < bestPriority) { bestPriority = priority; bestWeapon = item; }
     }
     return bestWeapon;
 }
 
-function sleep(ms) { // <<< Vẫn cần sleep cho equip
-    return new Promise(resolve => setTimeout(resolve, ms));
+function findAmmunition() {
+    if (!botInstance?.inventory) return null;
+    for (const ammoName of AMMUNITION) {
+        const item = botInstance.inventory.items().find(i => i?.name === ammoName);
+        if (item) return item;
+    }
+    return null;
+}
+
+async function activateShieldIfNeeded() {
+    if (!ENABLE_SHIELD || isShieldActive || !botInstance) return false;
+    const shield = botInstance.inventory.slots[botInstance.inventory.OFF_HAND_SLOT];
+    if (shield && shield.name === 'shield') {
+        try { botInstance.activateShield(); isShieldActive = true; return true; } catch {}
+    }
+    return false;
+}
+
+async function deactivateShieldIfNeeded() {
+    if (!isShieldActive || !botInstance) return false;
+    try { botInstance.deactivateShield(); isShieldActive = false; return true; } catch {}
+    return false;
+}
+
+function findBestHealingItem() {
+    if (!botInstance?.inventory) return null;
+    const inventoryItems = botInstance.inventory.items();
+    const enchantedApple = inventoryItems.find(item => item?.name === 'enchanted_golden_apple'); if (enchantedApple) return enchantedApple;
+    const goldenApple = inventoryItems.find(item => item?.name === 'golden_apple'); if (goldenApple) return goldenApple;
+    const healingPotion = inventoryItems.find(item => item && HEALING_POTION_NAMES.includes(item.name)); return healingPotion;
+}
+
+function checkEnemyShield(target) {
+    if (!target || target.type !== 'player') return false;
+    if (consecutiveMeleeMisses >= SHIELD_DETECTION_MISSES) return true;
+    return false;
 }
 
 // --- Initialization ---
 function initializeAutoDefend(bot, stopTasksFunction) {
-    if (!bot || typeof stopTasksFunction !== 'function') {
-        console.error("[Auto Defend] Lỗi khởi tạo: Cần bot instance và hàm stopAllTasks hợp lệ.");
-        return;
-    }
-    botInstance = bot;
-    stopAllTasksFn = stopTasksFunction;
-    isDefending = false;
-    defendingTarget = null;
-    clearDefenseIntervals(); // <<<< Đổi tên hàm dọn dẹp
-    lastHurtProcessedTime = 0;
-    defenseStartTime = 0;
+     if (!bot || typeof stopTasksFunction !== 'function') { console.error("Auto Defend Init Failed: Invalid args"); return; }
+     botInstance = bot; stopAllTasksFn = stopTasksFunction;
+     isDefending = false; defendingTarget = null; clearDefenseIntervals();
+     lastHurtProcessedTime = 0; defenseStartTime = 0; isShieldActive = false; currentStrafeDir = 0;
+     consecutiveMeleeMisses = 0; isAttemptingHeal = false;
 
-    botInstance.removeListener('entityHurt', handleEntityHurt);
-    botInstance.on('entityHurt', handleEntityHurt);
-    console.log("[Auto Defend] Đã khởi tạo và lắng nghe sự kiện bị tấn công.");
+     const registry = bot.registry;
+     softBlockTypes = new Set();
+     ['oak_leaves', 'spruce_leaves', 'birch_leaves', 'jungle_leaves', 'acacia_leaves', 'dark_oak_leaves', 'azalea_leaves', 'flowering_azalea_leaves', 'cherry_leaves',
+      'grass', 'tall_grass', 'fern', 'large_fern', 'vine', 'weeping_vines', 'twisting_vines', 'snow'
+     ].forEach(name => { if (registry.blocksByName[name]) softBlockTypes.add(registry.blocksByName[name].id); });
+
+     botInstance.removeListener('entityHurt', handleEntityHurt);
+     botInstance.on('entityHurt', handleEntityHurt);
+     console.log("[Auto Defend] Đã khởi tạo (PvP Nâng cao - No Eat Logic).");
 }
 
 // --- Event Handler ---
-function handleEntityHurt(entity) {
+async function handleEntityHurt(entity) {
     const now = Date.now();
-    if (!botInstance || !botInstance.entity || entity.id !== botInstance.entity.id || isDefending || botInstance.isProtecting) {
-        return;
-    }
-    if (now - lastHurtProcessedTime < HURT_PROCESS_COOLDOWN) {
-        return;
-    }
+    if (!botInstance || !botInstance.entity || entity.id !== botInstance.entity.id || isDefending || botInstance.isProtecting) return;
+    if (now - lastHurtProcessedTime < HURT_PROCESS_COOLDOWN) return;
 
-    // --- Logic tìm kẻ tấn công tiềm năng (Giữ nguyên) ---
-    let potentialAttacker = null;
-    let closestHostileInRange = null;
-    let closestPlayerInRange = null;
-    let minHostileDistSq = HOSTILE_SCAN_RADIUS * HOSTILE_SCAN_RADIUS;
-    let minPlayerDistSq = PLAYER_SCAN_RADIUS * PLAYER_SCAN_RADIUS;
     const botPos = botInstance.entity.position;
+    const blockAtFeet = botInstance.blockAt(botPos);
+    const blockAtHead = botInstance.blockAt(botPos.offset(0, 1, 0));
+    const isSuffocating = blockAtHead && isBlockSolid(blockAtHead);
+    const isOnFire = botInstance.entity.onFire;
+    const isInDangerousBlock = isBlockDangerous(botInstance.registry, blockAtFeet) || isBlockDangerous(botInstance.registry, blockAtHead);
+    const hasBadEffect = botInstance.entity.effects && Object.values(botInstance.entity.effects).some(e => e && (e.name === 'poison' || e.name === 'wither'));
+    // const isStarving = botInstance.food <= 0 && botInstance.health < botInstance.maxHealth; // <<<< XÓA KIỂM TRA ĐÓI
 
-    for (const entityId in botInstance.entities) {
-        const E = botInstance.entities[entityId];
-        if (E === botInstance.entity || !E.isValid) continue;
-        const distSq = E.position.distanceSquared(botPos);
-        const kindLower = E.kind ? E.kind.toLowerCase() : null;
-        const isHostile = kindLower === 'hostile mob' || kindLower === 'hostile mobs';
-        const isPlayer = E.type === 'player';
-        if (isHostile && distSq < minHostileDistSq) {
-            minHostileDistSq = distSq;
-            closestHostileInRange = E;
-        } else if (isPlayer && distSq < minPlayerDistSq) {
-            minPlayerDistSq = distSq;
-            closestPlayerInRange = E;
-        }
+    if (isSuffocating) {
+        console.log("[Auto Defend] Bị ngạt! Thử thoát..."); lastHurtProcessedTime = now;
+        if(stopAllTasksFn) stopAllTasksFn(botInstance, 'Bị ngạt'); await sleep(100);
+        try { if (blockAtHead && softBlockTypes.has(blockAtHead.type) && botInstance.canDigBlock(blockAtHead)) await botInstance.dig(blockAtHead); } catch {}
+        return;
+    }
+    if (isOnFire || isInDangerousBlock) {
+        console.log("[Auto Defend] Cháy/Nguy hiểm! Chạy!"); lastHurtProcessedTime = now;
+        if(stopAllTasksFn) stopAllTasksFn(botInstance, 'Cháy/Nguy hiểm'); await sleep(100);
+        const water = botInstance.findBlock({ matching: botInstance.registry.blocksByName.water?.id, maxDistance: 10 });
+        if (water) { try { botInstance.pathfinder.setGoal(new GoalBlock(water.position.x, water.position.y, water.position.z)); } catch { startFleeing(null); } }
+        else { startFleeing(null); }
+        return;
+    }
+    if (hasBadEffect /* || isStarving */) { // <<<< XÓA KIỂM TRA ĐÓI
+        lastHurtProcessedTime = now; return;
     }
 
+    // --- Tìm kẻ tấn công ---
+    let potentialAttacker = null; let closestHostileInRange = null; let closestPlayerInRange = null;
+    let minHostileDistSq = HOSTILE_SCAN_RADIUS * HOSTILE_SCAN_RADIUS; let minPlayerDistSq = PLAYER_SCAN_RADIUS * PLAYER_SCAN_RADIUS;
+    for (const entityId in botInstance.entities) {
+         const E = botInstance.entities[entityId];
+         if (!E || E === botInstance.entity || !E.isValid || !E.position) continue;
+         const distSq = E.position.distanceSquared(botPos);
+         const entityType = E.type?.toLowerCase(); const entityKind = E.kind?.toLowerCase();
+         const isHostileMob = entityType === 'hostile' || entityKind === 'hostile mobs' || entityKind === 'hostile';
+         const isPlayer = entityType === 'player';
+         if (isHostileMob && distSq < minHostileDistSq) { minHostileDistSq = distSq; closestHostileInRange = E; }
+         else if (isPlayer && distSq < minPlayerDistSq) { minPlayerDistSq = distSq; closestPlayerInRange = E; }
+    }
     if (closestHostileInRange && minHostileDistSq < VERY_CLOSE_THRESHOLD_SQ) potentialAttacker = closestHostileInRange;
     else if (closestHostileInRange && minHostileDistSq < LIKELY_ATTACKER_RANGE_SQ) potentialAttacker = closestHostileInRange;
     else if (closestHostileInRange) potentialAttacker = closestHostileInRange;
     else if (closestPlayerInRange) potentialAttacker = closestPlayerInRange;
-    // --- Kết thúc logic tìm kẻ tấn công ---
-
 
     if (potentialAttacker) {
-        const OWNER_USERNAME = ".XinhgaiLesbian"; // Thay nếu cần
-        if (potentialAttacker.type === 'player' && potentialAttacker.username === OWNER_USERNAME) {
-            console.log("[Auto Defend] Bỏ qua tấn công từ chủ nhân.");
-            return;
+        const OWNER_USERNAME = ".XinhgaiLesbian";
+        if (potentialAttacker.type === 'player' && potentialAttacker.username?.toLowerCase() === OWNER_USERNAME.toLowerCase()) {
+             lastHurtProcessedTime = now; return;
         }
-
-        lastHurtProcessedTime = now; // Ghi nhận đã xử lý
-        startDefending(potentialAttacker); // Bắt đầu phòng thủ
+        lastHurtProcessedTime = now;
+        startDefending(potentialAttacker);
+    } else {
+        lastHurtProcessedTime = now;
     }
 }
 
+
 // --- Core Defend Logic ---
 function startDefending(attacker) {
-    if (isDefending || !attacker || !attacker.isValid) return;
-
-    isDefending = true;
-    defendingTarget = attacker;
-    botInstance.isDefending = true;
-    defenseStartTime = Date.now(); // <<<< Ghi lại thời điểm bắt đầu
-
-    console.log(`[Auto Defend] === BẮT ĐẦU PHÒNG THỦ vs ${attacker.username || attacker.displayName} ===`);
-
-    console.log("[Auto Defend] Dừng các nhiệm vụ khác...");
-    if (stopAllTasksFn) {
-        stopAllTasksFn(botInstance, 'Bị tấn công');
-    } else {
-        console.error("[Auto Defend] Lỗi: Hàm stopAllTasks không được cung cấp!");
-    }
-
-    // QUAN TRỌNG: Dọn dẹp interval cũ trước khi quyết định đánh hay chạy
+    if (isDefending || !attacker?.isValid) return;
+    isDefending = true; defendingTarget = attacker; botInstance.isDefending = true; defenseStartTime = Date.now();
+    consecutiveMeleeMisses = 0; isAttemptingHeal = false;
+    const targetName = attacker.username || attacker.displayName || 'Kẻ địch';
+    console.log(`[Auto Defend] === BẮT ĐẦU PHÒNG THỦ vs ${targetName} (Type: ${attacker.type}) ===`);
+    try { botInstance.chat(`Gặp ${targetName}! ${attacker.type === 'player' ? 'Chuẩn bị PvP!' : 'Xử lý mày!'}`); } catch(e){}
+    if (stopAllTasksFn) stopAllTasksFn(botInstance, 'Bị tấn công');
     clearDefenseIntervals();
 
-    const bestWeapon = findBestWeapon();
-    if (bestWeapon) {
-        console.log(`[Auto Defend] Có vũ khí (${bestWeapon.name}). Đánh trả!`);
-        startCombatLoop(bestWeapon); // Bắt đầu vòng lặp chiến đấu (non-blocking)
+    // Chỉ kiểm tra máu để quyết định chạy
+    const shouldFlee = botInstance.health <= FLEE_INSTEAD_OF_FIGHT_HEALTH;
+    const isPlayerTarget = attacker.type === 'player';
+
+    if (shouldFlee) {
+        console.log(`[Auto Defend] Máu thấp (${botInstance.health}). Ưu tiên CHẠY TRỐN!`);
+        startFleeing(attacker);
     } else {
-        console.log("[Auto Defend] Không có vũ khí phù hợp. Chạy trốn!");
-        startFleeing(attacker); // Bắt đầu chạy trốn (non-blocking)
+        const bestAxe = ENABLE_PVP_AXE_VS_SHIELD && isPlayerTarget ? findBestWeapon(AXE_PRIORITY) : null;
+        const bestMelee = findBestWeapon(MELEE_WEAPON_PRIORITY);
+        const bestRanged = ENABLE_RANGED ? findBestWeapon(RANGED_PRIORITY) : null;
+        const hasAmmo = bestRanged && findAmmunition();
+        const isCreeper = attacker.name === 'creeper';
+        let distanceToAttacker = Infinity; try { distanceToAttacker = botInstance.entity.position.distanceTo(attacker.position); } catch {}
+
+        if (isCreeper && distanceToAttacker < CREEPER_FLEE_DISTANCE) { startFleeing(attacker); }
+        else if (bestRanged && hasAmmo && distanceToAttacker >= RANGED_WEAPON_MIN_DIST && distanceToAttacker <= RANGED_WEAPON_MAX_DIST) { startRangedCombatLoop(bestRanged); }
+        else if (bestMelee) { startMeleeCombatLoop(bestMelee, bestAxe); }
+        else { startFleeing(attacker); }
     }
 }
 
@@ -167,219 +243,261 @@ function stopDefending(reason) {
     if (!isDefending) return;
     const targetName = defendingTarget?.username || defendingTarget?.displayName || "mục tiêu cũ";
     console.log(`[Auto Defend] === DỪNG PHÒNG THỦ (vs ${targetName}). Lý do: ${reason} ===`);
-
-    isDefending = false;
-    defendingTarget = null;
-    botInstance.isDefending = false;
-    clearDefenseIntervals(); // Dọn dẹp TẤT CẢ interval (combat, look, flee)
-
-    try {
-        if (botInstance.pathfinder?.isMoving()) {
-            botInstance.pathfinder.stop();
-            botInstance.pathfinder.setGoal(null); // Xóa mục tiêu rõ ràng
-        }
-    } catch (e) {
-        console.error("[Auto Defend] Lỗi khi dừng pathfinder:", e.message);
-    }
+    isDefending = false; defendingTarget = null; botInstance.isDefending = false;
+    clearDefenseIntervals();
+    try { if (botInstance.pathfinder?.isMoving()) { botInstance.pathfinder.stop(); botInstance.pathfinder.setGoal(null); } } catch {}
+    deactivateShieldIfNeeded().catch(()=>{});
     botInstance.clearControlStates();
 }
 
-// --- Combat Loop (Non-Blocking - Dùng setInterval) ---
-function startCombatLoop(weapon) {
-    // Hàm equip vẫn cần await nhưng chỉ chạy 1 lần đầu hoặc khi cần equip lại
-    const equipAndAttack = async () => {
+
+// --- Combat Loops ---
+
+function startMeleeCombatLoop(primaryWeapon, bestAxe) {
+    let currentWeapon = primaryWeapon; // Sẽ được cập nhật trong interval
+    // let tryingToHeal = false; // Đã chuyển thành biến module isAttemptingHeal
+
+    const equipAndPrepare = async () => {
         try {
-            // 1. Equip nếu cần
-            if (!botInstance.heldItem || botInstance.heldItem.type !== weapon.type) {
-                console.log(`[Auto Defend Combat] Trang bị ${weapon.name}...`);
-                await botInstance.equip(weapon, 'hand');
-                await sleep(100); // Chờ một chút sau khi equip
+            if (!botInstance.heldItem || botInstance.heldItem.type !== primaryWeapon.type) {
+                await botInstance.equip(primaryWeapon, 'hand'); await sleep(100);
             }
+            if (ENABLE_SHIELD) await activateShieldIfNeeded();
+        } catch {}
+    };
+    equipAndPrepare();
 
-            // 2. Kiểm tra lại mục tiêu và khoảng cách để tấn công
-            if (!isDefending || !defendingTarget || !defendingTarget.isValid) {
-                 stopDefending(defendingTarget ? "Mục tiêu không còn hợp lệ khi chuẩn bị đánh" : "Không có mục tiêu khi chuẩn bị đánh");
-                 return;
-            }
-            const distance = botInstance.entity.position.distanceTo(defendingTarget.position);
-            const now = Date.now();
+    lookInterval = setInterval(() => { if (isDefending && defendingTarget?.isValid) botInstance.lookAt(defendingTarget.position.offset(0, defendingTarget.height * 0.8, 0), true).catch(() => {}); }, LOOK_INTERVAL);
 
-            if (distance < COMBAT_DISTANCE && now - lastAttackTime > ATTACK_INTERVAL) {
-                if (botInstance.heldItem?.type === weapon.type) {
-                    botInstance.attack(defendingTarget, true);
-                    lastAttackTime = now;
-                    console.log(`[Auto Defend Combat] Tấn công ${defendingTarget.username || defendingTarget.displayName}!`);
-                } else {
-                     console.warn("[Auto Defend Combat] Không cầm đúng vũ khí khi tấn công!");
-                }
-            }
-        } catch (err) {
-            console.error(`[Auto Defend Combat] Lỗi equip/attack:`, err.message);
-            stopDefending(`Lỗi equip/attack: ${err.message}`);
+    combatInterval = setInterval(async () => {
+        if (!isDefending || !defendingTarget?.isValid) { stopDefending("Mục tiêu không hợp lệ (Melee)"); return; }
+        if (Date.now() - defenseStartTime > DEFEND_TIMEOUT) { stopDefending("Hết thời gian (Melee)"); return; }
+        if (isAttemptingHeal) return;
+
+        const isPlayerTarget = defendingTarget.type === 'player';
+        const botPos = botInstance.entity.position;
+        const targetPos = defendingTarget.position;
+        let distance = Infinity; try { distance = botPos.distanceTo(targetPos); } catch {}
+        const now = Date.now();
+
+        // Kiểm tra hồi máu PvP
+        if (ENABLE_PVP_HEALING && isPlayerTarget && botInstance.health <= PVP_FLEE_HEALTH_THRESHOLD) {
+            const healingItem = findBestHealingItem();
+            if (healingItem) {
+                isAttemptingHeal = true; clearDefenseIntervals(); botInstance.clearControlStates();
+                botInstance.setControlState('back', true); await sleep(300); botInstance.setControlState('back', false);
+                try { await botInstance.equip(healingItem, 'hand'); await sleep(100); botInstance.activateItem(); await sleep(HEAL_TIMEOUT); } catch {}
+                finally { isAttemptingHeal = false; startDefending(defendingTarget); }
+                return;
+            } else { startFleeing(defendingTarget); return; }
         }
+        // Kiểm tra máu chung -> Chạy
+        if (botInstance.health <= FLEE_INSTEAD_OF_FIGHT_HEALTH) { // <<<< XÓA KIỂM TRA ĐÓI
+            console.log(`[Auto Defend ${isPlayerTarget ? 'PvP' : 'Mob'}] Máu thấp. Chạy!`);
+            startFleeing(defendingTarget); return;
+        }
+        // Xử lý Creeper
+        if (defendingTarget.name === 'creeper' && distance < CREEPER_FLEE_DISTANCE) { startFleeing(defendingTarget); return; }
+
+        // Xác định vũ khí và chiến thuật
+        let weaponToUse = primaryWeapon;
+        if (ENABLE_PVP_AXE_VS_SHIELD && isPlayerTarget && bestAxe && checkEnemyShield(defendingTarget)) weaponToUse = bestAxe;
+        const bestRanged = ENABLE_RANGED ? findBestWeapon(RANGED_PRIORITY) : null;
+        const hasAmmo = bestRanged && findAmmunition();
+        if (bestRanged && hasAmmo && distance >= RANGED_WEAPON_MIN_DIST) { startRangedCombatLoop(bestRanged); return; }
+
+        // Hành động cận chiến
+        if (distance < COMBAT_DISTANCE) {
+            if (botInstance.pathfinder.isMoving()) botInstance.pathfinder.stop();
+            if (currentStrafeDir === 0) botInstance.clearControlStates();
+            let canAttack = false;
+            try {
+                 if (!botInstance.heldItem || botInstance.heldItem.type !== weaponToUse.type) { await botInstance.equip(weaponToUse, 'hand'); await sleep(50); }
+                 if (botInstance.heldItem?.type === weaponToUse.type) canAttack = true;
+            } catch {}
+            if (canAttack) await deactivateShieldIfNeeded();
+
+            if (canAttack && now - lastAttackTime > ATTACK_INTERVAL) {
+                try {
+                    botInstance.attack(defendingTarget, true); lastAttackTime = now; consecutiveMeleeMisses = 0;
+                    if (ENABLE_KITING) { botInstance.setControlState('back', true); await sleep(150); botInstance.setControlState('back', false); }
+                } catch { consecutiveMeleeMisses++; }
+            } else if (canAttack) { consecutiveMeleeMisses++; }
+            if (ENABLE_SHIELD) await activateShieldIfNeeded();
+
+        } else if (distance < SAFE_DISTANCE) { // Đuổi theo
+            await deactivateShieldIfNeeded();
+            const followDist = isPlayerTarget ? PVP_FOLLOW_DISTANCE : FOLLOW_DISTANCE;
+            const goal = new GoalFollow(defendingTarget, followDist);
+            if (!botInstance.pathfinder.isMoving() || !(botInstance.pathfinder.goal instanceof GoalFollow) || botInstance.pathfinder.goal.entity !== defendingTarget || botInstance.pathfinder.goal.distance !== followDist) {
+                 botInstance.pathfinder.setGoal(goal, true);
+            }
+        } else { stopDefending("Mục tiêu quá xa (Melee)"); }
+
+    }, ATTACK_INTERVAL);
+
+    if (ENABLE_STRAFING) {
+        strafeInterval = setInterval(() => {
+            if (!isDefending || !defendingTarget?.isValid) { clearInterval(strafeInterval); strafeInterval = null; return; }
+            let distance = Infinity; try{ distance = botInstance.entity.position.distanceTo(defendingTarget.position); } catch{}
+            if (distance < COMBAT_DISTANCE + 1) {
+                const nextDir = Math.random() < 0.4 ? -1 : (Math.random() < 0.8 ? 1 : 0);
+                if (nextDir !== currentStrafeDir) {
+                    if (currentStrafeDir === -1) botInstance.setControlState('left', false); else if (currentStrafeDir === 1) botInstance.setControlState('right', false);
+                    currentStrafeDir = nextDir;
+                    if (currentStrafeDir === -1) botInstance.setControlState('left', true); else if (currentStrafeDir === 1) botInstance.setControlState('right', true);
+                    setTimeout(() => {
+                        if (currentStrafeDir === -1) botInstance.setControlState('left', false); else if (currentStrafeDir === 1) botInstance.setControlState('right', false);
+                        if(currentStrafeDir === nextDir) currentStrafeDir = 0;
+                    }, STRAFE_DURATION);
+                }
+            } else {
+                 if (currentStrafeDir === -1) botInstance.setControlState('left', false); else if (currentStrafeDir === 1) botInstance.setControlState('right', false);
+                 currentStrafeDir = 0;
+            }
+        }, STRAFE_INTERVAL);
+    }
+}
+
+function startRangedCombatLoop(weapon) {
+    const equipAndCheckAmmo = async () => {
+        try { if (!botInstance.heldItem || botInstance.heldItem.type !== weapon.type) await botInstance.equip(weapon, 'hand'); await sleep(100); return findAmmunition() !== null; } catch { return false; }
     };
 
-    // Chạy equip và tấn công lần đầu (nếu trong tầm)
-    equipAndAttack();
-
-    // Bắt đầu các interval kiểm tra và hành động
-    lookInterval = setInterval(() => {
-        if (!isDefending || !defendingTarget || !defendingTarget.isValid) return;
-        botInstance.lookAt(defendingTarget.position.offset(0, defendingTarget.height * 0.8, 0), true).catch(() => {});
-    }, LOOK_INTERVAL);
-
-    combatInterval = setInterval(() => {
-        if (!isDefending || !defendingTarget || !defendingTarget.isValid) {
-            stopDefending(defendingTarget ? "Mục tiêu không còn hợp lệ (Combat Check)" : "Không có mục tiêu (Combat Check)");
-            return;
+    equipAndCheckAmmo().then(hasAmmo => {
+        if (!hasAmmo) {
+             const bestMelee = findBestWeapon(MELEE_WEAPON_PRIORITY);
+             if (bestMelee) startMeleeCombatLoop(bestMelee, findBestWeapon(AXE_PRIORITY)); else startFleeing(defendingTarget);
+             return;
         }
+        lookInterval = setInterval(() => { if (isDefending && defendingTarget?.isValid) botInstance.lookAt(defendingTarget.position.offset(0, defendingTarget.height * 0.8, 0), true).catch(() => {}); }, LOOK_INTERVAL);
 
-        // Kiểm tra timeout chung
-        if (Date.now() - defenseStartTime > DEFEND_TIMEOUT) {
-            stopDefending("Hết thời gian phòng thủ (Combat)");
-             try { botInstance.chat("Hừ, dai quá, bỏ đi!"); } catch(e){}
-            return;
-        }
+        combatInterval = setInterval(async () => {
+            if (!isDefending || !defendingTarget?.isValid) { stopDefending("Mục tiêu không hợp lệ (Ranged)"); return; }
+            if (Date.now() - defenseStartTime > DEFEND_TIMEOUT) { stopDefending("Hết thời gian (Ranged)"); return; }
+            if (isAttemptingHeal) return;
 
-        const distance = botInstance.entity.position.distanceTo(defendingTarget.position);
+            const isPlayerTarget = defendingTarget.type === 'player'; // Định nghĩa lại
 
-        // 1. Tấn công (gọi lại hàm equipAndAttack để đảm bảo equip đúng và đánh nếu trong tầm)
-        if (distance < COMBAT_DISTANCE) {
-            equipAndAttack(); // Hàm này có kiểm tra cooldown tấn công bên trong
-        }
+            // Kiểm tra máu -> chạy
+            if (botInstance.health <= FLEE_INSTEAD_OF_FIGHT_HEALTH) { // <<<< XÓA KIỂM TRA ĐÓI
+                console.log(`[Auto Defend ${isPlayerTarget ? 'PvP' : 'Mob'}] Máu thấp khi bắn xa. Chạy!`);
+                startFleeing(defendingTarget); return;
+            }
 
-        // 2. Di chuyển (non-blocking setGoal)
-        const isMoving = botInstance.pathfinder.isMoving();
-        const currentGoal = botInstance.pathfinder.goal;
-        // Kiểm tra xem có cần cập nhật mục tiêu di chuyển không
-        const needsToMove = distance >= COMBAT_DISTANCE && distance < SAFE_DISTANCE;
-        const isChasingCorrectly = currentGoal instanceof GoalFollow && currentGoal.entity === defendingTarget;
+            const botPos = botInstance.entity.position;
+            const targetPos = defendingTarget.position;
+            let distance = Infinity; try { distance = botPos.distanceTo(targetPos); } catch {}
+            const now = Date.now();
 
-        if (needsToMove && (!isMoving || !isChasingCorrectly)) {
-             console.log(`[Auto Defend Combat] Mục tiêu ngoài tầm (${distance.toFixed(1)}m), đuổi theo...`);
-             const goal = new GoalFollow(defendingTarget, FOLLOW_DISTANCE);
-             botInstance.pathfinder.setGoal(goal, true); // Bắt đầu đuổi, không await
-        } else if (distance >= SAFE_DISTANCE) {
-             console.log(`[Auto Defend Combat] Mục tiêu chạy quá xa (${distance.toFixed(1)}m).`);
-             stopDefending("Mục tiêu quá xa (Combat)");
-        } else if (distance < COMBAT_DISTANCE && isMoving) { // Trong tầm đánh và đang di chuyển -> dừng lại
-             botInstance.pathfinder.stop();
-             console.log("[Auto Defend Combat] Đã trong tầm đánh, dừng di chuyển.");
-        }
+            if (!findAmmunition()) {
+                 const bestMelee = findBestWeapon(MELEE_WEAPON_PRIORITY);
+                 if (bestMelee) startMeleeCombatLoop(bestMelee, findBestWeapon(AXE_PRIORITY)); else startFleeing(defendingTarget);
+                 return;
+            }
 
-    }, Math.max(LOOK_INTERVAL, ATTACK_INTERVAL)); // Chạy kiểm tra thường xuyên
+            // Chuyển cận chiến
+            if (distance < RANGED_WEAPON_MIN_DIST) {
+                const bestMelee = findBestWeapon(MELEE_WEAPON_PRIORITY);
+                if (bestMelee) startMeleeCombatLoop(bestMelee, findBestWeapon(AXE_PRIORITY));
+                else startFleeing(defendingTarget);
+                return;
+            }
+
+            // Bắn
+            if (distance <= RANGED_WEAPON_MAX_DIST && now - lastRangedAttackTime > RANGED_ATTACK_INTERVAL) {
+                 if (botInstance.pathfinder.isMoving()) botInstance.pathfinder.stop();
+                 botInstance.clearControlStates(); await deactivateShieldIfNeeded();
+                 try {
+                     if (!botInstance.heldItem || botInstance.heldItem.type !== weapon.type) await botInstance.equip(weapon, 'hand'); await sleep(50);
+                     if (botInstance.heldItem?.type === weapon.type) {
+                         botInstance.activateItem(); await sleep(800); botInstance.deactivateItem();
+                         lastRangedAttackTime = now;
+                     }
+                 } catch {}
+            }
+            // Giữ khoảng cách / Dừng
+            else if (distance > RANGED_WEAPON_MAX_DIST + 2) { stopDefending("Mục tiêu quá xa (Ranged)"); }
+            else if (distance >= RANGED_WEAPON_MIN_DIST && distance <= RANGED_WEAPON_MAX_DIST && botInstance.pathfinder.isMoving()){
+                 botInstance.pathfinder.stop();
+            }
+        }, RANGED_ATTACK_INTERVAL / 2);
+    });
 }
 
-// --- Fleeing Logic (Non-Blocking - Dùng setInterval) --- <<<< SỬA ĐỔI LỚN
-function startFleeing(attacker) {
-    // Đã gọi clearDefenseIntervals() trong startDefending rồi
+async function startFleeing(attacker) {
+    const targetName = attacker?.username || attacker?.displayName || 'kẻ địch';
+    clearDefenseIntervals(); await sleep(10);
+    if (!isDefending) return;
 
-    let fleeGoal = null;
-    const botPos = botInstance.entity.position;
+    let fleeGoal = null; const botPos = botInstance.entity.position;
+    console.log(`[Auto Defend] Bắt đầu CHẠY TRỐN khỏi ${targetName}! (Sau dọn dẹp)`);
+    try { botInstance.chat(`Á á, chạy khỏi ${targetName} thôi!`); } catch(e){}
 
-    console.log("[Auto Defend] Bắt đầu CHẠY TRỐN!");
-     try { botInstance.chat("Á á, chạy thôi!"); } catch(e){}
+    const homeWaypoint = botInstance.waypoints?.home;
+    let homePos = null;
+    if (homeWaypoint && typeof homeWaypoint.x === 'number' && typeof homeWaypoint.y === 'number' && typeof homeWaypoint.z === 'number') homePos = new Vec3(homeWaypoint.x, homeWaypoint.y, homeWaypoint.z);
 
-    // Xác định mục tiêu chạy (Giữ nguyên logic)
-    const homeWaypoint = botInstance.waypoints ? botInstance.waypoints['home'] : null;
-    if (homeWaypoint && botPos.distanceTo(homeWaypoint) < 100) {
-        console.log(`[Auto Defend Flee] Ưu tiên chạy về nhà tại ${formatCoords(homeWaypoint)}!`);
-        fleeGoal = new GoalBlock(homeWaypoint.x, homeWaypoint.y, homeWaypoint.z);
-    } else if (attacker && attacker.isValid) {
-         console.log(`[Auto Defend Flee] Chạy giữ khoảng cách ${SAFE_DISTANCE}m với ${attacker.username || attacker.displayName}.`);
-         fleeGoal = new GoalInvert(new GoalFollow(attacker, SAFE_DISTANCE));
-    } else {
-        console.log("[Auto Defend Flee] Chạy theo hướng ngẫu nhiên.");
+    if (homePos && botPos.distanceTo(homePos) < 100 && (!attacker || !attacker.isValid || attacker.position.distanceTo(homePos) > SAFE_DISTANCE + 5)) { fleeGoal = new GoalBlock(homePos.x, homePos.y, homePos.z); }
+    else if (attacker?.isValid) { fleeGoal = new GoalInvert(new GoalFollow(attacker, SAFE_DISTANCE)); }
+    else {
         let fleeDirection = new Vec3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
-        if (fleeDirection.distanceTo(new Vec3(0,0,0)) < 0.1) fleeDirection = new Vec3(1, 0, 0);
-        const fleeTargetPos = botPos.plus(fleeDirection.scaled(FLEE_DISTANCE_RANDOM));
-        fleeGoal = new GoalNear(fleeTargetPos.x, fleeTargetPos.y, fleeTargetPos.z, 2);
+        if (fleeDirection.norm() < 0.1) fleeDirection = new Vec3(1, 0, 0);
+        const fleeTargetPos = botPos.plus(fleeDirection.scaled(SAFE_DISTANCE));
+        fleeGoal = new GoalNear(fleeTargetPos.x, fleeTargetPos.y, fleeTargetPos.z, 3);
     }
 
-    if (!fleeGoal) {
-         console.error("[Auto Defend Flee] Không thể xác định mục tiêu chạy trốn.");
-         stopDefending("Không thể xác định mục tiêu chạy trốn");
-         return;
-    }
-
+    if (!fleeGoal) { stopDefending("Không thể tạo mục tiêu chạy trốn"); return; }
     try {
-         console.log("[Auto Defend Flee] Thiết lập mục tiêu chạy trốn...");
-         botInstance.pathfinder.setGoal(fleeGoal); // <<<< NON-BLOCKING: Chỉ đặt mục tiêu
-         console.log("[Auto Defend Flee] Mục tiêu đã thiết lập. Bắt đầu kiểm tra định kỳ.");
-
-         // Bắt đầu vòng lặp kiểm tra trạng thái chạy trốn
-         fleeCheckInterval = setInterval(() => checkFleeingStatus(attacker), FLEE_CHECK_INTERVAL);
-
-    } catch (err) {
-         console.error(`[Auto Defend Flee] Lỗi khi thiết lập mục tiêu chạy trốn: ${err.message}`);
-         stopDefending(`Lỗi pathfinding khi bắt đầu chạy trốn: ${err.message}`);
-    }
+        botInstance.pathfinder.setGoal(fleeGoal);
+        fleeCheckInterval = setInterval(() => checkFleeingStatus(attacker), FLEE_CHECK_INTERVAL);
+    } catch (err) { stopDefending(`Lỗi pathfinding khi chạy: ${err.message}`); }
 }
 
-// --- Hàm kiểm tra trạng thái chạy trốn định kỳ --- <<<< HÀM MỚI
 function checkFleeingStatus(originalAttacker) {
-    if (!isDefending) {
-        // console.log("[Auto Defend Flee Check] Đã dừng phòng thủ từ bên ngoài."); // Có thể bị gọi nếu stopDefending được gọi bởi lý do khác
-        // Không cần gọi stopDefending ở đây vì nó đã được gọi rồi và interval sẽ bị xóa
-        return;
-    }
+    if (!isDefending || !botInstance?.entity) { clearDefenseIntervals(); return; }
+    if (Date.now() - defenseStartTime > DEFEND_TIMEOUT) { stopDefending("Hết thời gian (Flee Check)"); return; }
 
-    // Kiểm tra timeout chung
-    if (Date.now() - defenseStartTime > DEFEND_TIMEOUT) {
-        console.log("[Auto Defend Flee Check] Hết thời gian phòng thủ (Flee Check).");
-         try { botInstance.chat("Mệt quá, không chạy nữa!"); } catch(e){}
-        stopDefending("Hết thời gian phòng thủ (Flee)");
-        return;
-    }
-
-    // Sử dụng defendingTarget để kiểm tra kẻ địch hiện tại
-    const currentTarget = defendingTarget;
-
-    if (!currentTarget || !currentTarget.isValid) {
-         console.log("[Auto Defend Flee Check] Kẻ địch không còn hợp lệ. Đã an toàn.");
-          try { botInstance.chat("Phù, nó biến mất rồi!"); } catch(e){}
-         stopDefending("Kẻ địch biến mất khi đang chạy trốn");
-         return;
-    }
+    const currentTarget = defendingTarget || originalAttacker;
+    if (!currentTarget?.isValid) { stopDefending("Kẻ địch biến mất khi chạy"); return; }
 
     const botPos = botInstance.entity.position;
     const targetPos = currentTarget.position;
-    const currentDistanceSq = botPos.distanceSquared(targetPos);
+    let currentDistance = SAFE_DISTANCE + 1; try { currentDistance = botPos.distanceTo(targetPos); } catch {}
+    const currentDistanceSq = currentDistance * currentDistance;
 
-    // Kiểm tra đã đạt khoảng cách an toàn chưa
-    if (currentDistanceSq >= SAFE_DISTANCE_SQ) {
-         console.log(`[Auto Defend Flee Check] Đã đạt khoảng cách an toàn (${Math.sqrt(currentDistanceSq).toFixed(1)}m).`);
-          try { botInstance.chat("Phù, tạm an toàn rồi!"); } catch(e){}
-         stopDefending("Đạt khoảng cách an toàn khi chạy trốn");
-         return;
+    if (currentDistanceSq >= SAFE_DISTANCE_SQ) { stopDefending("Đạt khoảng cách an toàn"); return; }
+
+    if (ENABLE_FLEE_SHOOT) {
+        const bestRanged = findBestWeapon(RANGED_PRIORITY);
+        const hasAmmo = bestRanged && findAmmunition();
+        const now = Date.now();
+        if (bestRanged && hasAmmo && currentDistance >= RANGED_WEAPON_MIN_DIST && currentDistance <= RANGED_WEAPON_MAX_DIST && now - lastRangedAttackTime > RANGED_ATTACK_INTERVAL * 1.5) {
+            botInstance.lookAt(targetPos.offset(0, currentTarget.height * 0.8, 0), true).catch(()=>{});
+            (async () => {
+                 try {
+                    if (!botInstance.heldItem || botInstance.heldItem.type !== bestRanged.type) await botInstance.equip(bestRanged, 'hand'); await sleep(50);
+                     if (botInstance.heldItem?.type === bestRanged.type) {
+                         botInstance.activateItem(); await sleep(600); botInstance.deactivateItem();
+                         lastRangedAttackTime = now;
+                     }
+                 } catch {}
+            })();
+        }
     }
 
-    // Kiểm tra xem pathfinder có còn đang di chuyển không (có thể bị kẹt)
-    if (!botInstance.pathfinder.isMoving()) {
-         console.warn(`[Auto Defend Flee Check] Pathfinder không di chuyển dù chưa an toàn (Dist: ${Math.sqrt(currentDistanceSq).toFixed(1)}m). Có thể bị kẹt. Dừng chạy.`);
-          try { botInstance.chat("Ối, hình như bị kẹt khi chạy!"); } catch(e){}
-         stopDefending("Bị kẹt hoặc pathfinder dừng khi chạy trốn");
-         return;
-    }
-
-    // Nếu chưa thỏa mãn điều kiện dừng, tiếp tục chạy
-    // console.log(`[Auto Defend Flee Check] Vẫn đang chạy trốn... Khoảng cách: ${Math.sqrt(currentDistanceSq).toFixed(1)}m`); // Log nếu cần debug
+    if (!botInstance.pathfinder.isMoving() && botInstance.pathfinder.goal) { stopDefending("Bị kẹt/Pathfinder dừng khi chạy"); return; }
 }
 
-// --- Clean Up Function --- <<<< HÀM DỌN DẸP MỚI
+// --- Clean Up Function ---
 function clearDefenseIntervals() {
-    if (combatInterval) clearInterval(combatInterval);
-    if (lookInterval) clearInterval(lookInterval);
-    if (fleeCheckInterval) clearInterval(fleeCheckInterval); // <<<< Dọn dẹp interval chạy trốn
-    combatInterval = null;
-    lookInterval = null;
-    fleeCheckInterval = null; // <<<< Reset biến
+    if (combatInterval) clearInterval(combatInterval); combatInterval = null;
+    if (lookInterval) clearInterval(lookInterval); lookInterval = null;
+    if (fleeCheckInterval) clearInterval(fleeCheckInterval); fleeCheckInterval = null;
+    if (strafeInterval) clearInterval(strafeInterval); strafeInterval = null;
+    isShieldActive = false; currentStrafeDir = 0; isAttemptingHeal = false;
 }
 
 // --- Exports ---
-module.exports = {
-    initializeAutoDefend,
-    stopDefending, // Vẫn export để có thể gọi từ bên ngoài nếu cần
-    // Không cần export isDefending vì bot chính đã có cờ trạng thái
-};
-// --- END OF FILE commands/auto_defend.js ---
+module.exports = { initializeAutoDefend, stopDefending };
+// --- END OF FILE ---
