@@ -5,7 +5,7 @@ const { pathfinder, Movements, goals } = require("mineflayer-pathfinder");
 const mcData = require("minecraft-data");
 const collectBlock = require("mineflayer-collectblock");
 const { Vec3 } = require("vec3");
-
+const dashboard = require("mineflayer-dashboard"); 
 // Import các module lệnh
 const autoLoot = require("./auto_loot");
 const cleanInventoryCommands = require("./commands/clean_inventory");
@@ -70,6 +70,17 @@ const bot = mineflayer.createBot({
 
 bot.loadPlugin(pathfinder);
 bot.loadPlugin(collectBlock.plugin);
+console.log("Đã load được pathfinder và collectBlock");
+console.log(">>> Đang chuẩn bị load dashboard..."); // LOG 1
+try {
+    const dashboard = require('mineflayer-dashboard'); // Đảm bảo require ở đây hoặc ở đầu file
+    bot.loadPlugin(dashboard, { port: 3002 });     // DÒNG LOAD PLUGIN
+    console.log(">>> Đã gọi bot.loadPlugin(dashboard) thành công."); // LOG 2
+} catch (dashboardError) {
+    console.error("!!! LỖI NGAY KHI LOAD DASHBOARD:", dashboardError); // LOG LỖI
+}
+// ---> KẾT THÚC KIỂM TRA TẠI ĐÂY <---
+
 console.log("Đã tạo bot. Bắt đầu kết nối...");
 
 // --- Khởi tạo Trạng thái Bot ---

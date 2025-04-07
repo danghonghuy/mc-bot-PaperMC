@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mineflayer Web Dashboard</title>
+    <link rel="stylesheet" href="/style.css"> <!-- Link tới file CSS -->
+</head>
+<body>
+    <div id="app-container">
+        <aside id="sidebar">
+            <h2>Trạng thái Bot</h2>
+            <section class="status-section">
+                <div id="status">Đang kết nối...</div>
+                <div>Máu: <span id="health">N/A</span></div>
+                <div>Thức ăn: <span id="food">N/A</span></div>
+                <div>Vị trí: <span id="position">N/A</span></div> <!-- Thêm hiển thị vị trí -->
+            </section>
+            <hr>
+            <section class="chat-section">
+                <h2>Chat</h2>
+                <div id="chat-log"></div>
+                <form id="chat-input-form">
+                    <input type="text" id="message-input" placeholder="Nhập tin nhắn hoặc lệnh..." autocomplete="off">
+                    <button type="submit">Gửi</button>
+                </form>
+            </section>
+        </aside>
+
+        <main id="main-content">
+             <div id="viewer-container">
+                 <canvas id="viewer-canvas"></canvas>
+                 <div id="viewer-status">Viewer đang tải...</div>
+             </div>
+        </main>
+    </div>
+
+    <!-- Thư viện Socket.IO client -->
+    <script src="/socket.io/socket.io.js"></script>
+    <!-- Thư viện Prismarine Viewer client -->
+    <!-- QUAN TRỌNG: Đảm bảo đường dẫn này đúng. Nếu server phục vụ từ node_modules, nó sẽ là /index.js -->
+    <script src="/index.js"></script> <!-- Sửa từ viewer.js thành index.js dựa trên cấu trúc thư viện -->
+    <!-- Script client của bạn -->
+    <script src="/client.js"></script>
+</body>
+</html>

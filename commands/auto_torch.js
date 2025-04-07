@@ -4,8 +4,8 @@ const { sleep } = require("../utils");
 const craftCommands = require("./craft");
 
 // --- Ngưỡng và Cài đặt ---
-const TORCH_LIGHT_THRESHOLD = 3;      // Mức ánh sáng tại chân bot để kích hoạt đặt đuốc (<= ngưỡng này sẽ đặt)
-const PLACEMENT_LIGHT_THRESHOLD = 7;  // Mức ánh sáng tối đa cho phép tại vị trí SẼ ĐẶT đuốc (đặt nếu < ngưỡng này) - Dùng cho validate
+const TORCH_LIGHT_THRESHOLD = 2;      // Mức ánh sáng tại chân bot để kích hoạt đặt đuốc (<= ngưỡng này sẽ đặt)
+const PLACEMENT_LIGHT_THRESHOLD = 5;  // Mức ánh sáng tối đa cho phép tại vị trí SẼ ĐẶT đuốc (đặt nếu < ngưỡng này) - Dùng cho validate
 const CHECK_DISTANCE = 3;             // Khoảng cách tìm tường xung quanh để đặt
 const PLACE_COOLDOWN_MS = 2000;       // Thời gian chờ tối thiểu giữa 2 lần đặt đuốc
 const MIN_TORCH_DISTANCE = 7;         // Khoảng cách tối thiểu giữa các đuốc đã đặt và vị trí mới
@@ -14,7 +14,7 @@ const REQUIRED_STICK = 1;
 const TORCH_CRAFT_AMOUNT = 8;         // Số lượng đuốc chế tạo mỗi lần
 
 // --- Tùy chọn hành vi ---
-const ENABLE_CREATE_SPOT = true;      // Bật/tắt khả năng tạo khối đất để đặt đuốc
+const ENABLE_CREATE_SPOT = false;      // Bật/tắt khả năng tạo khối đất để đặt đuốc
 const CREATE_SPOT_BLOCK_NAME = "dirt"; // Loại khối sẽ tạo (cần có trong inventory)
 // const ENABLE_MOVE_TO_PLACE = false; // Đã loại bỏ logic này
 
@@ -289,9 +289,9 @@ async function checkAndCraftTorches() {
       return false;
     }
   } else {
-    console.log(
-      `[Auto Torch] Không đủ nguyên liệu (Cần ${REQUIRED_COAL} coal/charcoal, ${REQUIRED_STICK} stick. Có ${coalCount}, ${stickCount}).`
-    );
+    // console.log(
+    //   `[Auto Torch] Không đủ nguyên liệu (Cần ${REQUIRED_COAL} coal/charcoal, ${REQUIRED_STICK} stick. Có ${coalCount}, ${stickCount}).`
+    // );
     return false;
   }
 }

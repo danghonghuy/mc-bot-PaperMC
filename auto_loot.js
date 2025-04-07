@@ -9,7 +9,7 @@ let checkInterval = null;
 let isCheckingOrLooting = false; // Cờ để tránh chạy nhiều lần cùng lúc
 let currentTargetItem = null; // Item đang nhắm tới
 const CHECK_RADIUS = 24; // Bán kính quét
-const CHECK_INTERVAL_MS = 3000; // Quét mỗi 3 giây
+const CHECK_INTERVAL_MS = 200000; // Quét mỗi 3 giây
 const MIN_DISTANCE_TO_LOOT = 1.5; // Khoảng cách đủ gần để nhặt
 
 function initializeAutoLoot(_bot, itemsConfig) {
