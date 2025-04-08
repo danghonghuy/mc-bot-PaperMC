@@ -1,6 +1,5 @@
 // server_web.js (FINAL - FULL BOT LOGIC + WEB INTERFACE + VIEWER ENABLED - COMPLETE CODE + Refined Viewer Port Handling + No Delay)
 
-// --- Requires Section ---
 require("dotenv").config();
 const mineflayer = require("mineflayer");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -12,10 +11,9 @@ const http = require("http");
 const express = require("express");
 const { Server } = require("socket.io");
 const path = require("path");
-const { mineflayer: viewer } = require("prismarine-viewer"); // VIEWER IS ENABLED
+const { mineflayer: viewer } = require("prismarine-viewer");
 const net = require("net");
 
-// --- Import ALL Command and Auto Modules ---
 const autoLoot = require("./auto_loot");
 const cleanInventoryCommands = require("./commands/clean_inventory");
 const followCommands = require("./commands/follow");
@@ -50,11 +48,10 @@ const {
   translateToEnglishId,
 } = require("./utils");
 const mineflayerViewer = require("prismarine-viewer").mineflayer;
-
-// --- Configuration ---
+let currentViewMode = 'thirdPerson';
 const SERVER_ADDRESS = process.env.SERVER_ADDRESS || "dhhnedhhne.aternos.me";
 const SERVER_PORT = parseInt(process.env.SERVER_PORT || "21691", 10);
-const BOT_USERNAME = process.env.BOT_USERNAME || "TuiBucBoi_WebFinal"; // Use a distinct name
+const BOT_USERNAME = process.env.BOT_USERNAME || "TuiBucBoi_WebFinal";
 const MINECRAFT_VERSION = process.env.MINECRAFT_VERSION || "1.21.4";
 const WEB_SERVER_PORT = process.env.WEB_PORT || 3000;
 const VIEWER_PORT = 5003;
@@ -67,11 +64,10 @@ if (!GEMINI_API_KEY) {
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const aiModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-// --- Web Server Setup ---
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
-// Update these lines in your botWeb.js
+
 app.use(express.static(path.join(__dirname, "public")));
 app.use(
   "/prismarine-viewer",
@@ -97,13 +93,11 @@ console.log(
   `[Final Bot] Web interface will run at http://localhost:${WEB_SERVER_PORT}`
 );
 
-// --- KHAI BÁO BIẾN TOÀN CỤC ---
 let viewerPort = null;
 let isViewerPortReady = false;
 let viewerCheckInterval = null;
 const connectedSockets = new Map();
 
-// Function to check if a port is available
 async function isPortAvailable(port) {
   return new Promise((resolve) => {
     const tester = net
@@ -116,7 +110,6 @@ async function isPortAvailable(port) {
   });
 }
 
-// --- Bot Initialization (Immediately) ---
 console.log("[Final Bot] Initiating bot connection immediately.");
 const bot = mineflayer.createBot({
   host: SERVER_ADDRESS,
@@ -124,16 +117,14 @@ const bot = mineflayer.createBot({
   username: BOT_USERNAME,
   version: MINECRAFT_VERSION,
   hideErrors: false,
-  checkTimeoutInterval: 60 * 1000, // Can be increased if needed for slow connections
+  checkTimeoutInterval: 60 * 1000,
 });
 
-// --- Load Plugins ---
 bot.loadPlugin(pathfinder);
 bot.loadPlugin(collectBlock.plugin);
 
 console.log("[Final Bot] Bot instance created. Starting connection process...");
 
-// --- Initialize Bot State Variables ---
 bot.botInGameName = BOT_USERNAME;
 bot.defaultMove = null;
 bot.followingTarget = null;
@@ -172,12 +163,9 @@ bot.positionUpdateInterval = null;
 bot.chatHistory = [];
 const MAX_CHAT_HISTORY = 10;
 
-// --- checkAndViewerPort function ---
 function checkAndViewerPort() {
-  // Hàm này kiểm tra xem bot.viewer và bot.viewer.port đã tồn tại chưa
-  // sau khi mineflayerViewer() được gọi
   if (bot && bot.viewer && bot.viewer.port) {
-    viewerPort = bot.viewer.port; // Lấy port thực tế từ viewer instance
+    viewerPort = bot.viewer.port;
     isViewerPortReady = true;
     console.log(
       `[Viewer Ready] Port ${viewerPort} is now available (detected after spawn init). Broadcasting.`
@@ -196,7 +184,6 @@ function checkAndViewerPort() {
 checkAndViewerPort.loggedViewer = false;
 checkAndViewerPort.lastViewerState = null;
 
-// --- stopAllTasks Function ---
 function stopAllTasks(botInstanceRef, usernameOrReason) {
   let stoppedSomething = false;
   const reasonText =
@@ -400,113 +387,114 @@ function stopAllTasks(botInstanceRef, usernameOrReason) {
   }
   console.log("[Stop All - Final Bot] Finished processing stop request.");
 }
+
 async function initializeViewer(bot, preferredPort = 5003) {
-    const PORT_RANGE = 100;
-    const VIEWER_INIT_TIMEOUT = 3000;
-  
-    console.log(`[Viewer] Initializing viewer (${preferredPort}-${preferredPort + PORT_RANGE})`);
-  
-    for (let port = preferredPort; port < preferredPort + PORT_RANGE; port++) {
-      try {
-        // 1. Kiểm tra cổng trống
-        const isAvailable = await checkPortAvailability(port);
-        if (!isAvailable) continue;
-  
-        // 2. Khởi tạo viewer với cơ chế mới
-        console.log(`[Viewer] Attempting port ${port}`);
-        const viewerSuccess = await startViewerWithTimeout(bot, port, VIEWER_INIT_TIMEOUT);
-        
-        if (viewerSuccess) {
-          console.log(`[Viewer] Successfully started on port ${port}`);
-          return { success: true, port };
-        }
-      } catch (err) {
-        console.error(`[Viewer] Port ${port} failed:`, err.message);
+  const PORT_RANGE = 100;
+  const VIEWER_INIT_TIMEOUT = 3000;
+
+  console.log(
+    `[Viewer] Initializing viewer (${preferredPort}-${
+      preferredPort + PORT_RANGE
+    })`
+  );
+
+  for (let port = preferredPort; port < preferredPort + PORT_RANGE; port++) {
+    try {
+      const isAvailable = await checkPortAvailability(port);
+      if (!isAvailable) continue;
+
+      console.log(`[Viewer] Attempting port ${port}`);
+      const viewerSuccess = await startViewerWithTimeout(
+        bot,
+        port,
+        VIEWER_INIT_TIMEOUT
+      );
+
+      if (viewerSuccess) {
+        console.log(`[Viewer] Successfully started on port ${port}`);
+        return { success: true, port };
       }
+    } catch (err) {
+      console.error(`[Viewer] Port ${port} failed:`, err.message);
     }
-  
-    return { 
-      success: false, 
-      message: `Failed to start viewer after scanning ${PORT_RANGE} ports` 
-    };
   }
-  
-  // Hàm kiểm tra cổng
-  async function checkPortAvailability(port) {
-    return new Promise((resolve) => {
-      const tester = require('net').createServer()
-        .once('error', () => resolve(false))
-        .once('listening', () => {
-          tester.once('close', () => resolve(true)).close();
-        })
-        .listen(port);
+
+  return {
+    success: false,
+    message: `Failed to start viewer after scanning ${PORT_RANGE} ports`,
+  };
+}
+
+async function checkPortAvailability(port) {
+  return new Promise((resolve) => {
+    const tester = require("net")
+      .createServer()
+      .once("error", () => resolve(false))
+      .once("listening", () => {
+        tester.once("close", () => resolve(true)).close();
+      })
+      .listen(port);
+  });
+}
+
+async function startViewerWithTimeout(bot, port, timeout) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      console.log(`[Viewer] Timeout on port ${port}`);
+      resolve(false);
+    }, timeout);
+
+    require("prismarine-viewer").mineflayer(bot, {
+      port: port,
+      viewDistance: 6,
+      firstPerson: false,
     });
+
+    setTimeout(() => {
+      clearTimeout(timer);
+      resolve(true);
+    }, 1000);
+  });
+}
+
+function checkUsedPorts() {
+  const net = require("net");
+  const usedPorts = [];
+
+  for (let port = 5003; port <= 5102; port++) {
+    const tester = net
+      .createServer()
+      .once("error", () => usedPorts.push(port))
+      .once("listening", () => tester.close())
+      .listen(port);
   }
-  
-  // Hàm khởi tạo viewer với timeout
-  async function startViewerWithTimeout(bot, port, timeout) {
-    return new Promise((resolve) => {
-      // Thiết lập timeout
-      const timer = setTimeout(() => {
-        console.log(`[Viewer] Timeout on port ${port}`);
-        resolve(false);
-      }, timeout);
-  
-      // Khởi tạo viewer (phiên bản mới không cần xử lý server instance)
-      require('prismarine-viewer').mineflayer(bot, { 
-        port: port,
-        viewDistance: 6,
-        firstPerson: false
-      });
-  
-      // Giả định viewer khởi động thành công nếu không có lỗi sau 1s
-      setTimeout(() => {
-        clearTimeout(timer);
-        resolve(true);
-      }, 1000);
-    });
-  }
-  function checkUsedPorts() {
-    const net = require('net');
-    const usedPorts = [];
-    
-    for (let port = 5003; port <= 5102; port++) {
-      const tester = net.createServer()
-        .once('error', () => usedPorts.push(port))
-        .once('listening', () => tester.close())
-        .listen(port);
-    }
-  
-    return new Promise(resolve => {
-      setTimeout(() => resolve(usedPorts), 3000);
-    });
-  }
-  
-// --- Bot Event Handlers ('spawn', 'chat', 'health', 'end', etc.) ---
+
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(usedPorts), 3000);
+  });
+}
+
 bot.once("spawn", async () => {
-    const usedPorts = await checkUsedPorts();
-    console.log(`Các cổng đang bận: ${usedPorts.join(', ')}`);
-    
-    // Chọn cổng bắt đầu cao hơn nếu cần
- 
-    console.log("[Bot] Starting viewer initialization...");
-    const viewerResult = await initializeViewer(bot, 5003);
-    
-    if (viewerResult.success) {
-      console.log(`[Bot] Viewer ready at port ${viewerResult.port}`);
-      io.emit("viewer_ready", { port: viewerResult.port });
-    } else {
-      console.error("[Bot] Viewer failed:", viewerResult.message);
-      io.emit("viewer_error", viewerResult.message);
-      
-      // Thử cổng dự phòng
-      const fallbackResult = await initializeViewer(bot, 6000);
-      if (fallbackResult.success) {
-        io.emit("viewer_ready", { port: fallbackResult.port });
-      }
+  const usedPorts = await checkUsedPorts();
+  console.log(`Các cổng đang bận: ${usedPorts.join(", ")}`);
+
+  console.log("[Bot] Starting viewer initialization...");
+  const viewerResult = await initializeViewer(bot, 5003);
+
+  if (viewerResult.success) {
+    console.log(`[Bot] Viewer ready at port ${viewerResult.port}`);
+    io.emit("viewer_ready", { port: viewerResult.port });
+  } else {
+    console.error("[Bot] Viewer failed:", viewerResult.message);
+    io.emit("viewer_error", viewerResult.message);
+
+    const fallbackResult = await initializeViewer(bot, 6000);
+    if (fallbackResult.success) {
+      io.emit("viewer_ready", { port: fallbackResult.port });
     }
-    
-  bot.botInGameName = bot.username; // Update bot name once spawned
+  }
+
+  bot.botInGameName = bot.username;
   console.log(
     `[Final Bot Spawn] *** Bot (${bot.botInGameName}) đã vào server! ***`
   );
@@ -519,7 +507,6 @@ bot.once("spawn", async () => {
     z: roundCoord(startPos.z),
   });
 
-  // Full State Reset on Spawn
   console.log("[Final Bot Spawn] Resetting full state...");
   bot.isFollowing = false;
   bot.followingTarget = null;
@@ -559,20 +546,17 @@ bot.once("spawn", async () => {
     clearInterval(bot.positionUpdateInterval);
     bot.positionUpdateInterval = null;
   }
-  // Reset viewer state as well on spawn, before starting checks
   if (viewerCheckInterval) clearInterval(viewerCheckInterval);
   viewerCheckInterval = null;
   viewerPort = null;
   isViewerPortReady = false;
 
-  // Initialize viewer with port checking
   console.log(
     `[Viewer] Checking for available port starting from ${VIEWER_PORT}`
   );
   let availablePort = VIEWER_PORT;
   let portFound = false;
 
-  // Find an available port
   for (let port = VIEWER_PORT; port < VIEWER_PORT + 100; port++) {
     if (await isPortAvailable(port)) {
       availablePort = port;
@@ -589,10 +573,24 @@ bot.once("spawn", async () => {
 
   console.log(`[Viewer] Initializing on port ${availablePort}`);
   try {
-    mineflayerViewer(bot, { port: availablePort });
-    console.log("[Viewer Init] mineflayerViewer function called.");
+    mineflayerViewer(bot, {
+      port: availablePort,
+      viewDistance: 6,
+      firstPerson: false, // <<< Đặt ở đây
+    });
+    console.log("[DEBUG] bot.viewer:", bot.viewer);
+    if (bot.viewer) {
+      console.log(
+        "[DEBUG] Viewer initialized. Checking methods:",
+        bot.viewer.setFirstPerson
+      );
+    } else {
+      console.log("[DEBUG] Viewer not initialized!");
+    }
+    console.log(
+      "[Viewer Init] mineflayerViewer function called with firstPerson: true."
+    );
 
-    // Set a timeout to check if viewer initialized successfully
     setTimeout(() => {
       if (bot.viewer && bot.viewer.port) {
         viewerPort = bot.viewer.port;
@@ -611,24 +609,32 @@ bot.once("spawn", async () => {
     );
     io.emit("viewer_error", "Lỗi nghiêm trọng khi khởi tạo viewer.");
   }
- // Khởi tạo viewer (chỉ 1 lần duy nhất)
- const viewerInitResult = await initializeViewer(bot, VIEWER_PORT);
-  
- if (viewerInitResult.success) {
-   viewerPort = viewerInitResult.port;
-   isViewerPortReady = true;
-   io.emit("viewer_port", viewerPort);
-   io.emit("viewer_ready", { port: viewerPort });
- } else {
-   console.error(viewerInitResult.message);
-   io.emit("viewer_error", viewerInitResult.message);
- }
-  // Initialize Movements
+
+  const viewerInitResult = await initializeViewer(bot, VIEWER_PORT);
+
+  if (viewerInitResult.success) {
+    viewerPort = viewerInitResult.port;
+    isViewerPortReady = true;
+    io.emit("viewer_port", viewerPort);
+    io.emit("viewer_ready", { port: viewerPort });
+  } else {
+    console.error(viewerInitResult.message);
+    io.emit("viewer_error", viewerInitResult.message);
+  }
+  console.log("[Final Bot Spawn] Loading mcData for version", bot.version);
+  fcurrentMcData = mcData(bot.version);
+  bot.mcData = mcData(bot.version);
+  if (!bot.mcData) {
+    console.error("!!! CRITICAL: Failed to load mcData for bot version!");
+    io.emit("bot_error", "Lỗi nghiêm trọng: Không thể tải dữ liệu game!");
+    // Có thể cân nhắc dừng bot ở đây
+    return;
+  }
+  console.log("[Final Bot Spawn] mcData loaded successfully.");
   console.log("[Final Bot Spawn] Initializing Movements...");
   try {
-    const currentMcData = mcData(bot.version);
     if (!currentMcData) throw new Error("Cannot load mcData!");
-    if (bot.pathfinder) bot.pathfinder.thinkTimeout = 10000; // Increase pathfinder timeout
+    if (bot.pathfinder) bot.pathfinder.thinkTimeout = 10000;
     bot.defaultMove = new Movements(bot, currentMcData);
     bot.defaultMove.allowSprinting = true;
     bot.defaultMove.allowParkour = true;
@@ -636,7 +642,6 @@ bot.once("spawn", async () => {
     bot.defaultMove.maxDropDown = 4;
     bot.defaultMove.allow1by1towers = true;
     bot.defaultMove.canPlace = true;
-    // Configure blocks for pathfinding
     if (!bot.defaultMove.blocksToPlace)
       bot.defaultMove.blocksToPlace = new Set();
     const scaffoldBlocks = [
@@ -698,7 +703,6 @@ bot.once("spawn", async () => {
     io.emit("bot_error", `Lỗi Movements: ${err.message}`);
   }
 
-  // Initialize ALL Auto Modules (Pass 'io' where needed for web updates)
   console.log("[Final Bot Spawn] Initializing Auto Modules...");
   try {
     const VALUABLE_ITEMS = [
@@ -716,34 +720,33 @@ bot.once("spawn", async () => {
     autoLoot.initializeAutoLoot(bot, VALUABLE_ITEMS, io);
   } catch (e) {
     console.error("[Final Bot Spawn] Error initializing AutoLoot:", e);
-  } // Pass io
+  }
   try {
     eventNotifierCommands.initializeEventNotifier(bot, io);
   } catch (e) {
     console.error("[Final Bot Spawn] Error initializing EventNotifier:", e);
-  } // Pass io
+  }
   try {
     autoEatCommands.initializeAutoEat(bot, io);
   } catch (e) {
     console.error("[Final Bot Spawn] Error initializing AutoEat:", e);
-  } // Pass io
+  }
   try {
     autoTorch.initializeAutoTorch(bot, aiModel, io);
   } catch (e) {
     console.error("[Final Bot Spawn] Error initializing AutoTorch:", e);
-  } // Pass io
+  }
   try {
     autoDefend.initializeAutoDefend(bot, stopAllTasks, io);
   } catch (e) {
     console.error("[Final Bot Spawn] Error initializing AutoDefend:", e);
-  } // Pass io
+  }
   try {
     farmWheatCommands.initialize(bot, io);
   } catch (e) {
     console.error("[Final Bot Spawn] Error initializing FarmWheat:", e);
-  } // Pass io
+  }
 
-  // Start Auto Torch Interval
   console.log("[Final Bot Spawn] Starting AutoTorch Interval...");
   if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval);
   const AUTO_TORCH_INTERVAL_MS = 2500;
@@ -763,7 +766,6 @@ bot.once("spawn", async () => {
   }, AUTO_TORCH_INTERVAL_MS);
   console.log(`[Final Bot Spawn] AutoTorch Interval started.`);
 
-  // Start Position Update Interval
   console.log("[Final Bot Spawn] Starting Position Update Interval...");
   if (bot.positionUpdateInterval) clearInterval(bot.positionUpdateInterval);
   const POSITION_UPDATE_INTERVAL_MS = 1500;
@@ -789,7 +791,6 @@ bot.once("spawn", async () => {
     `[Final Bot Spawn] Position update interval started (${POSITION_UPDATE_INTERVAL_MS}ms).`
   );
 
-  // Send welcome message
   console.log("[Final Bot Spawn] Setting welcome message timeout...");
   setTimeout(() => {
     try {
@@ -801,7 +802,6 @@ bot.once("spawn", async () => {
     }
   }, 1500);
 
-  // Pathfinder event listeners
   console.log("[Final Bot Spawn] Adding Pathfinder Listeners...");
   const pathfinderEvents = [
     "goal_reached",
@@ -822,7 +822,6 @@ bot.once("spawn", async () => {
       );
       if (isPathError) {
         io.emit("bot_error", `Lỗi di chuyển: ${reason}`);
-        // --- Full path error handling ---
         if (bot.isFinding && findCommands.handleFindPathError)
           findCommands.handleFindPathError(bot, reason);
         else if (
@@ -880,16 +879,14 @@ bot.once("spawn", async () => {
   });
   console.log("[Final Bot Spawn] Pathfinder Listeners Added.");
 
-  // Send initial health/food status
   io.emit("health", { health: bot.health, food: bot.food });
   console.log("[Final Bot Spawn] Spawn handler complete.");
 });
 
 bot.on("chat", async (username, message) => {
-  io.emit("chat", { username, message }); // Send raw chat to web clients
-  if (username === bot.username || !message) return; // Ignore self or empty messages
+  io.emit("chat", { username, message });
+  if (username === bot.username || !message) return;
 
-  // Basic chat logic (history, stop keywords, confirmations)
   console.log("[Final Bot Chat] Processing basic chat logic...");
   try {
     const timestamp = new Date().toLocaleTimeString();
@@ -1010,7 +1007,6 @@ bot.on("chat", async (username, message) => {
   }
   console.log("[Final Bot Chat] Basic chat logic passed.");
 
-  // AI Classification and Command Execution
   console.log("[Final Bot Chat] Starting AI Classification...");
   try {
     const baseClassificationPrompt = `**Nhiệm vụ:** Phân loại ý định chính của người dùng dựa trên tin nhắn cuối cùng và lịch sử trò chuyện (nếu có).\n\n**Danh sách các loại ý định có thể:**\n*   GET_BOT_COORDS: Hỏi tọa độ hiện tại của bot.\n*   GET_ENTITY_COORDS: Hỏi tọa độ của người chơi hoặc mob khác.\n*   FOLLOW_PLAYER: Yêu cầu bot đi theo người chơi đã nói.\n*   FIND_BLOCK: Tìm kiếm một loại block hoặc mob cụ thể.\n*   CHECK_INVENTORY: Xem các vật phẩm trong túi đồ của bot.\n*   GIVE_ITEM: Yêu cầu bot đưa một vật phẩm cho người chơi.\n*   PROTECT_PLAYER: Bảo vệ người chơi đã nói khỏi quái vật.\n*   COLLECT_BLOCK: Thu thập một số lượng block nhất định.\n*   GOTO_COORDS: Đi đến một tọa độ XYZ cụ thể.\n*   SCAN_ORES: Quét các loại quặng hoặc block đặc biệt xung quanh bot.\n*   SAVE_WAYPOINT: Lưu vị trí hiện tại hoặc tọa độ đã cho với một cái tên.\n*   GOTO_WAYPOINT: Đi đến một điểm đã lưu trước đó.\n*   FLATTEN_AREA: Làm phẳng một khu vực theo bán kính cho trước.\n*   LIST_WAYPOINTS: Liệt kê tất cả các điểm đã lưu.\n*   DELETE_WAYPOINT: Xóa một điểm đã lưu.\n*   BREED_ANIMALS: Cho các con vật (ví dụ: bò, cừu) ăn để chúng giao phối.\n*   CRAFT_ITEM: Chế tạo vật phẩm bằng bàn chế tạo (lò nung cần bàn chế tạo) hoặc trong túi đồ.\n*   SMELT_ITEM: Nung/nấu vật phẩm trong lò (furnace, smoker, blast furnace). **Quan trọng:** Phân loại là SMELT_ITEM cho các vật phẩm cần dùng lò nung trong minecraft \n*   GO_TO_SLEEP: Yêu cầu bot đi ngủ nếu trời tối.\n*   STRIP_MINE: Đào một đường hầm dài để tìm tài nguyên.\n*   HUNT_MOB: Săn một loại mob cụ thể để lấy vật phẩm.\n*   BUILD_HOUSE: Xây một ngôi nhà cơ bản.\n*   CLEAN_INVENTORY: Vứt bỏ các vật phẩm không cần thiết (đá cuội, đất...).\n*   DEPOSIT_ITEMS: Cất đồ vào các rương gần đó.\n*   EQUIP_ITEM: Trang bị vũ khí, công cụ hoặc áo giáp tốt nhất.\n*   FARM_WHEAT: Thu hoạch lúa mì và trồng lại hạt giống trong một khu vực.\n*   IDENTIFY_ITEM: Nhận dạng block/mob/item mà người chơi hỏi nhưng không rõ tên.\n*   LIST_CAPABILITIES: Hỏi bot có thể làm được những gì.\n*   STOP_TASK: Yêu cầu bot dừng ngay lập tức hành động đang làm.\n*   GENERAL_CHAT: Các câu nói, câu hỏi thông thường, không thuộc các loại trên.\n*   IGNORE: Tin nhắn không liên quan, spam, hoặc không cần bot phản hồi.`;
@@ -1078,7 +1074,6 @@ bot.on("chat", async (username, message) => {
       return;
     }
 
-    // --- Execute Command (Pass 'io' to commands for web updates) ---
     console.log(`[Final Bot Chat] Executing: ${intentClassification}`);
     switch (intentClassification) {
       case "GET_BOT_COORDS":
@@ -1430,7 +1425,6 @@ bot.on("end", (reason) => {
   console.log("[Final Event] Disconnected. Reason:", reason);
   io.emit("bot_status", `Đã ngắt kết nối: ${reason}`);
   if (autoLoot?.stopAutoLoot) autoLoot.stopAutoLoot("Bot connection ended");
-  // Clear all intervals associated with the bot instance
   if (bot.autoEatInterval) clearInterval(bot.autoEatInterval);
   bot.autoEatInterval = null;
   if (bot.protectionInterval) clearInterval(bot.protectionInterval);
@@ -1441,7 +1435,6 @@ bot.on("end", (reason) => {
   bot.autoTorchInterval = null;
   if (bot.positionUpdateInterval) clearInterval(bot.positionUpdateInterval);
   bot.positionUpdateInterval = null;
-  // Stop viewer check and reset state
   if (viewerCheckInterval) clearInterval(viewerCheckInterval);
   viewerCheckInterval = null;
   viewerPort = null;
@@ -1449,17 +1442,14 @@ bot.on("end", (reason) => {
   console.log("[Final Event] Cleaned timers and reset viewer state.");
 });
 
-// --- Socket.IO Connection Handler ---
 io.on("connection", (socket) => {
   console.log(`[Final Bot] Web client connected: ${socket.id}`);
-  connectedSockets.set(socket.id, socket); // Add client to the map
+  connectedSockets.set(socket.id, socket);
 
-  // Send initial status - 'bot' is defined, check entity for connection status
   const currentStatus = bot.entity ? "Đang hoạt động" : "Đang kết nối...";
   socket.emit("bot_status", currentStatus);
-  socket.emit("bot_info", { username: bot.botInGameName || BOT_USERNAME }); // Send bot name
+  socket.emit("bot_info", { username: bot.botInGameName || BOT_USERNAME });
 
-  // Send initial health/position if bot is already spawned
   if (bot.entity) {
     socket.emit("health", { health: bot.health, food: bot.food });
     const pos = bot.entity.position;
@@ -1469,8 +1459,31 @@ io.on("connection", (socket) => {
       z: roundCoord(pos.z),
     });
   }
-
-  // Send viewer port if it's already available
+  if (bot.inventory) {
+    console.log(`[Inventory] Sending initial inventory to client ${socket.id}`);
+    try {
+      // Lấy item và đảm bảo định dạng cơ bản client cần
+      const formattedInventory = bot.inventory.items().map((item) => ({
+        name: item.name,
+        displayName: item.displayName,
+        count: item.count,
+        slot: item.slot, // Có thể hữu ích cho client sau này
+        // Thêm các thuộc tính khác nếu cần, ví dụ: item.nbt
+      }));
+      socket.emit("inventory_update", formattedInventory);
+    } catch (invError) {
+      console.error(
+        `[Inventory] Error getting/sending initial inventory: ${invError.message}`
+      );
+      socket.emit("bot_error", "Không thể lấy dữ liệu túi đồ ban đầu.");
+    }
+  } else {
+    console.warn(
+      `[Inventory] Bot inventory not available yet for client ${socket.id}`
+    );
+    // Gửi mảng rỗng hoặc thông báo lỗi tùy ý
+    socket.emit("inventory_update", []);
+  }
   if (isViewerPortReady && viewerPort) {
     console.log(
       `[Viewer Send] Sending known port ${viewerPort} to new client ${socket.id}`
@@ -1481,37 +1494,357 @@ io.on("connection", (socket) => {
       `[Viewer Send] Port not yet known for new client ${socket.id}. Will send when available via broadcast.`
     );
   }
+  socket.on("request_inventory_update", () => {
+    if (bot.inventory) {
+      console.log(
+        `[Inventory] Received inventory update request from ${socket.id}`
+      );
+      try {
+        const formattedInventory = bot.inventory.items().map((item) => ({
+          name: item.name,
+          displayName: item.displayName,
+          count: item.count,
+          slot: item.slot,
+        }));
+        socket.emit("inventory_update", formattedInventory);
+      } catch (invError) {
+        console.error(
+          `[Inventory] Error getting/sending requested inventory: ${invError.message}`
+        );
+        socket.emit("bot_error", "Không thể cập nhật dữ liệu túi đồ.");
+      }
+    } else {
+      socket.emit("inventory_update", []);
+    }
+  });
 
-  // Listen for chat messages from the web client
   socket.on("sendChat", (message) => {
     if (typeof bot.chat === "function") {
       console.log(
         `[Web Input] Received chat/command from ${socket.id}: ${message}`
       );
-      bot.chat(message); // Send message/command to the bot
+      bot.chat(message);
     } else {
       console.warn("[Web Input] Bot object lacks chat function.");
       socket.emit("bot_error", "Lỗi bot: Không thể gửi chat.");
     }
   });
 
-  // Handle client disconnection
+  socket.on("bot_control", (data) => {
+    if (!bot.entity) {
+      console.warn("[Bot Control] Bot not in game, ignoring control command");
+      return;
+    }
+
+    try {
+      switch (data.action) {
+        case "start_move":
+          console.log(`[Bot Control] Starting movement: ${data.direction}`);
+          bot.setControlState(data.direction, true);
+          break;
+        case "stop_move":
+          console.log(`[Bot Control] Stopping movement: ${data.direction}`);
+          bot.setControlState(data.direction, false);
+          break;
+        case "mouse_move":
+          console.log(
+            `[Bot Control] Mouse move: dx=${data.deltaX}, dy=${data.deltaY}`
+          );
+          bot.look(
+            bot.entity.yaw + data.deltaX * 0.002,
+            bot.entity.pitch + data.deltaY * 0.002
+          );
+          break;
+        case "attack":
+          console.log("[Bot Control] Attack action received");
+          // Tìm entity gần nhất (không phải người chơi hoặc item rơi) để tấn công
+          const targetEntity = bot.nearestEntity(
+            (entity) =>
+              entity.type !== "player" &&
+              entity.type !== "object" && // Loại bỏ item rơi, thuyền, etc.
+              entity.position.distanceTo(bot.entity.position) < 5 // Giới hạn khoảng cách tấn công
+          );
+          if (targetEntity) {
+            console.log(
+              `[Bot Control] Attacking nearest entity: ${
+                targetEntity.displayName ||
+                targetEntity.name ||
+                targetEntity.type
+              } (ID: ${targetEntity.id})`
+            );
+            bot.attack(targetEntity);
+          } else {
+            console.log(
+              "[Bot Control] No nearby entity to attack, swinging arm."
+            );
+            bot.swingArm(); // Vung tay nếu không có mục tiêu
+          }
+          // Lưu ý: bot.attack chỉ tấn công 1 lần. Để tấn công liên tục cần logic phức tạp hơn.
+          break;
+
+        case "mine":
+          console.log("[Bot Control] Mine action received");
+          const blockToMine = bot.blockAtCursor(5); // Lấy block trong tầm nhìn (max 5 blocks)
+          if (blockToMine && bot.canDigBlock(blockToMine)) {
+            console.log(
+              `[Bot Control] Attempting to mine block: ${blockToMine.name} at ${blockToMine.position}`
+            );
+            bot.dig(blockToMine).catch((err) => {
+              // Bắt lỗi nếu không đào được
+              console.error(
+                `[Bot Control] Error digging block: ${err.message}`
+              );
+              socket.emit("bot_error", `Lỗi đào: ${err.message}`);
+            });
+            // Lưu ý: bot.dig đào liên tục cho đến khi xong hoặc bị dừng.
+          } else if (blockToMine) {
+            console.log(
+              `[Bot Control] Cannot mine block: ${blockToMine.name} (maybe too far, wrong tool, or unbreakable)`
+            );
+            socket.emit("system_message", {
+              message: `Không thể đào ${blockToMine.displayName}`,
+            });
+          } else {
+            console.log("[Bot Control] No block in sight to mine.");
+            socket.emit("system_message", {
+              message: "Không nhìn thấy block nào để đào.",
+            });
+          }
+          break;
+        case "place":
+          console.log("[Bot Control] Place action received");
+          // Sử dụng IIFE (Immediately Invoked Function Expression) để dùng async/await
+          (async () => {
+            try {
+              if (!bot.mcData) {
+                console.error("[Bot Control] mcData not loaded on bot object.");
+                socket.emit("bot_error", "Lỗi: Dữ liệu game chưa được tải.");
+                return;
+              }
+
+              const referenceBlock = bot.blockAtCursor(5); // Block bot đang nhìn vào (trong phạm vi 5 block)
+              if (!referenceBlock) {
+                console.log("[Bot Control] No block in sight to place on.");
+                // Gửi tin nhắn hệ thống thay vì lỗi, vì đây là hành động người dùng
+                socket.emit("system_message", {
+                  message: "Không nhìn thấy vị trí nào để đặt khối.",
+                });
+                return;
+              }
+
+              console.log(
+                `[Bot Control] Reference block found: ${
+                  referenceBlock.name
+                } at ${formatCoords(referenceBlock.position)}`
+              );
+
+              let itemToPlace = bot.heldItem; // Item đang cầm trên tay
+              let needToEquip = false;
+
+              // --- Bước 1: Kiểm tra item đang cầm có phù hợp không ---
+              const isHeldItemPlaceable =
+                itemToPlace &&
+                bot.mcData.items[itemToPlace.type]?.stackSize > 0 && // Phải là item stack được (loại bỏ không khí, etc.)
+                !bot.mcData.items[itemToPlace.type].tool && // Không phải công cụ
+                !bot.mcData.items[itemToPlace.type].weapon; // Không phải vũ khí
+
+              if (isHeldItemPlaceable) {
+                console.log(
+                  `[Bot Control] Using held item: ${itemToPlace.name}`
+                );
+              } else {
+                console.log(
+                  "[Bot Control] Held item not suitable or empty. Searching inventory..."
+                );
+                itemToPlace = null; // Đặt lại để tìm trong túi
+
+                // --- Bước 2: Tìm khối phù hợp trong túi đồ ---
+                // Danh sách ưu tiên các khối xây dựng/lấp thông thường
+                const commonBlocksPriority = [
+                  "cobblestone",
+                  "dirt",
+                  "stone",
+                  "netherrack",
+                  "cobbled_deepslate",
+                  "oak_planks",
+                  "spruce_planks",
+                  "birch_planks",
+                  "andesite",
+                  "diorite",
+                  "granite",
+                  "sand",
+                  "gravel",
+                ];
+                const inventoryItems = bot.inventory.items(); // Lấy tất cả item trong túi
+
+                // Tìm trong danh sách ưu tiên trước
+                for (const blockName of commonBlocksPriority) {
+                  // find item by name, case-insensitive just in case
+                  const foundItem = inventoryItems.find(
+                    (item) =>
+                      item.name.toLowerCase() === blockName.toLowerCase()
+                  );
+                  if (foundItem) {
+                    itemToPlace = foundItem;
+                    console.log(
+                      `[Bot Control] Found preferred block in inventory: ${itemToPlace.name} (Slot: ${itemToPlace.slot})`
+                    );
+                    break; // Dừng tìm kiếm khi thấy item ưu tiên
+                  }
+                }
+
+                // Nếu không tìm thấy trong danh sách ưu tiên, tìm bất kỳ khối nào có thể đặt được
+                if (!itemToPlace) {
+                  console.log(
+                    "[Bot Control] No preferred block found, searching for any placeable block..."
+                  );
+                  itemToPlace = inventoryItems.find((item) => {
+                    const itemData = bot.mcData.items[item.type];
+                    return (
+                      itemData &&
+                      itemData.stackSize > 0 && // Có thể stack (thường là block/item)
+                      !itemData.tool && // Không phải tool
+                      !itemData.weapon && // Không phải weapon
+                      item.name !== "air"
+                    ); // Không phải không khí
+                    // Có thể thêm điều kiện loại trừ khác nếu cần (vd: thức ăn, thuốc...)
+                  });
+                  if (itemToPlace) {
+                    console.log(
+                      `[Bot Control] Found alternative placeable item: ${itemToPlace.name} (Slot: ${itemToPlace.slot})`
+                    );
+                  }
+                }
+
+                // Nếu vẫn không tìm thấy khối nào
+                if (!itemToPlace) {
+                  console.log(
+                    "[Bot Control] No suitable block found in inventory to place."
+                  );
+                  socket.emit("system_message", {
+                    message:
+                      "Không tìm thấy khối nào phù hợp trong túi đồ để đặt.",
+                  });
+                  return; // Dừng hành động
+                }
+                needToEquip = true; // Đánh dấu cần phải equip
+              }
+
+              // --- Bước 3: Trang bị khối nếu cần ---
+              if (needToEquip) {
+                console.log(
+                  `[Bot Control] Equipping ${itemToPlace.name} (from slot ${itemToPlace.slot})`
+                );
+                try {
+                  await bot.equip(itemToPlace, "hand");
+                  console.log(
+                    `[Bot Control] Successfully equipped ${bot.heldItem?.name}.`
+                  );
+                  // Đợi một chút để server xử lý việc equip trước khi đặt
+                  await sleep(150); // Chờ 150ms
+                } catch (equipError) {
+                  console.error(
+                    `[Bot Control] Failed to equip ${itemToPlace.name}:`,
+                    equipError
+                  );
+                  socket.emit(
+                    "bot_error",
+                    `Lỗi không thể cầm ${itemToPlace.displayName} lên tay.`
+                  );
+                  return;
+                }
+              }
+
+              // --- Bước 4 & 5: Xác định hướng và Đặt khối ---
+              // Thử để Mineflayer tự động xác định hướng đặt dựa trên con trỏ
+              // bot.placeBlock(referenceBlock, faceVector)
+              // Nếu không cung cấp faceVector, nó sẽ cố gắng tính toán
+              // Nếu cung cấp Vec3(0,1,0), nó sẽ ưu tiên đặt lên trên nhưng vẫn có thể điều chỉnh
+              console.log(
+                `[Bot Control] Attempting to place ${bot.heldItem?.name} relative to ${referenceBlock.name}`
+              );
+
+              // Sử dụng face vector là (0, 1, 0) - đặt lên trên làm mặc định phổ biến
+              // Mineflayer đủ thông minh để điều chỉnh nếu đặt lên trên không hợp lệ
+              // và sẽ cố gắng đặt vào mặt khối đang nhìn nếu có thể.
+              const faceVector = new Vec3(0, 1, 0);
+
+              await bot.placeBlock(referenceBlock, faceVector);
+
+              console.log(
+                `[Bot Control] Successfully initiated placement of ${bot.heldItem?.name}.`
+              );
+              // Không cần gửi message thành công ở đây, vì hành động có thể mất thời gian
+              // Có thể lắng nghe sự kiện 'blockPlaced' nếu cần xác nhận
+            } catch (err) {
+              console.error(
+                `[Bot Control] Error during place action: ${err.message}`
+              );
+              // Cung cấp thông báo lỗi thân thiện hơn cho người dùng
+              let userMessage = `Lỗi đặt khối: ${err.message}`;
+              if (
+                err.message.toLowerCase().includes("cannot place block") ||
+                err.message.toLowerCase().includes("invalid placement")
+              ) {
+                userMessage = "Lỗi: Không thể đặt khối ở vị trí đó.";
+              } else if (
+                err.message.toLowerCase().includes("digging") ||
+                err.message.toLowerCase().includes("breaking")
+              ) {
+                userMessage = "Lỗi: Bot đang đào hoặc phá khối, không thể đặt.";
+              } else if (
+                err.message.toLowerCase().includes("no block specified") ||
+                !bot.heldItem
+              ) {
+                userMessage = "Lỗi: Bot không cầm khối nào trên tay để đặt.";
+              } else if (err.message.toLowerCase().includes("timeout")) {
+                userMessage = "Lỗi: Hết thời gian chờ khi cố gắng đặt khối.";
+              }
+              socket.emit("bot_error", userMessage);
+            }
+          })(); // Gọi hàm async ngay lập tức
+          break;
+        case "stop":
+          console.log("[Bot Control] Stop all actions");
+          stopAllTasks(bot, "Từ web");
+          break;
+        case "change_view":
+          console.log(
+            `[Bot Control] Changing view mode request received: ${data.mode}`
+          );
+          if (data.mode === "toggle") {
+            // Giả định trạng thái hiện tại dựa trên lần cuối cùng thay đổi (hoặc mặc định)
+            const newMode =
+              currentViewMode === "firstPerson" ? "thirdPerson" : "firstPerson";
+            currentViewMode = newMode; // Cập nhật trạng thái server-side (biến toàn cục)
+            io.emit("change_view_mode", { mode: newMode });
+          } else {
+            currentViewMode = data.mode; // Cập nhật trạng thái nếu mode cụ thể được gửi
+            io.emit("change_view_mode", { mode: data.mode });
+          }
+          break;
+        default:
+          console.warn(`[Bot Control] Unknown action: ${data.action}`);
+      }
+    } catch (err) {
+      console.error("[Bot Control] Error:", err);
+      socket.emit("bot_error", `Lỗi điều khiển: ${err.message}`);
+    }
+  });
+
   socket.on("disconnect", () => {
     console.log(`[Final Bot] Web client disconnected: ${socket.id}`);
-    connectedSockets.delete(socket.id); // Remove client from the map
+    connectedSockets.delete(socket.id);
   });
 });
 
-// --- Start Web Server ---
 server.listen(WEB_SERVER_PORT, () => {
   console.log(`[Final Bot] Web server listening on port ${WEB_SERVER_PORT}`);
   console.log(`[Final Bot] Access: http://localhost:${WEB_SERVER_PORT}`);
 });
 
-// --- Graceful Shutdown (SIGINT Handler) ---
 process.on("SIGINT", () => {
   console.log("\n[Final Bot] Shutting down...");
-  // Clear all known intervals
   if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval);
   bot.stuckDetectionInterval = null;
   if (bot.autoEatInterval) clearInterval(bot.autoEatInterval);
@@ -1526,7 +1859,6 @@ process.on("SIGINT", () => {
   viewerCheckInterval = null;
   console.log("[SIGINT Final] Cleared interval timers including viewer check.");
 
-  // Stop all bot tasks
   stopAllTasks(bot, "Tắt server");
   const quitMessage = `Bot AI (${bot.botInGameName || BOT_USERNAME}) offline.`;
   try {
@@ -1535,7 +1867,6 @@ process.on("SIGINT", () => {
     console.warn("Could not send quit message:", e.message);
   }
 
-  // Close servers and exit
   io.close(() => {
     console.log("[Final Bot] Socket.IO closed.");
   });
@@ -1549,9 +1880,8 @@ process.on("SIGINT", () => {
       }
       console.log("[Final Bot] Exiting.");
       process.exit(0);
-    }, 500); // Short delay for bot quit message
+    }, 500);
   });
-  // Force exit if graceful shutdown fails
   setTimeout(() => {
     console.error("Foarce exiting after timeout...");
     process.exit(1);

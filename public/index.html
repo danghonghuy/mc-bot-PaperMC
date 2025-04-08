@@ -5,157 +5,159 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mineflayer Bot Dashboard - TuiBucBoi</title>
     <link rel="stylesheet" href="/css/style.css">
-    <style>
-        /* CSS tạm thời để đảm bảo giao diện hoạt động ngay */
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 0;
-            background-color: #1e1e1e;
-            color: #e0e0e0;
-        }
-        #app-container {
-            display: flex;
-            min-height: 100vh;
-        }
-        #sidebar {
-            width: 300px;
-            background-color: #252526;
-            padding: 20px;
-            border-right: 1px solid #333;
-        }
-        #main-content {
-            flex: 1;
-            padding: 20px;
-            background-color: #1e1e1e;
-        }
-        #viewer-container {
-            position: relative;
-            width: 100%;
-            height: 80vh;
-            background-color: #000;
-            border: 1px solid #444;
-        }
-        #viewer-canvas {
-            width: 100%;
-            height: 100%;
-            display: block;
-        }
-        #viewer-status {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            color: white;
-            background-color: rgba(0,0,0,0.7);
-            padding: 5px 10px;
-            border-radius: 3px;
-        }
-        #chat-log {
-            height: 300px;
-            overflow-y: auto;
-            margin-bottom: 15px;
-            border: 1px solid #333;
-            padding: 10px;
-            background-color: #252526;
-        }
-        .chat-message {
-            margin-bottom: 5px;
-            word-wrap: break-word;
-        }
-        .bot-message {
-            color: #4ec9b0;
-        }
-        .system-message {
-            color: #9cdcfe;
-            font-style: italic;
-        }
-        .error-message {
-            color: #f48771;
-        }
-        #chat-input-form {
-            display: flex;
-            gap: 10px;
-        }
-        #message-input {
-            flex: 1;
-            padding: 8px;
-            background-color: #333;
-            border: 1px solid #444;
-            color: white;
-        }
-        button {
-            padding: 8px 15px;
-            background-color: #0e639c;
-            color: white;
-            border: none;
-            cursor: pointer;
-        }
-        button:hover {
-            background-color: #1177bb;
-        }
-        .status-section {
-            margin-bottom: 20px;
-        }
-    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
     <div id="app-container">
         <aside id="sidebar">
-            <h2>🤖 Trạng thái Bot</h2>
-            <section class="status-section">
-                <div id="status">🔄 Đang kết nối...</div>
-                <div>❤️ Máu: <span id="health">N/A</span></div>
-                <div>🍖 Thức ăn: <span id="food">N/A</span></div>
-                <div>📍 Vị trí: <span id="position">N/A</span></div>
-            </section>
-            
-            <hr>
-            
-            <section class="chat-section">
-                <h2>💬 Chat với Bot</h2>
-                <div id="chat-log" aria-live="polite"></div>
-                <form id="chat-input-form">
-                    <input type="text" id="message-input" 
-                           placeholder="Nhập lệnh (ví dụ: 'đi theo tôi')" 
-                           autocomplete="off"
-                           aria-label="Tin nhắn chat">
-                    <button type="submit">Gửi</button>
-                </form>
-            </section>
+            <div class="sidebar-header">
+                <h1><i class="fas fa-robot"></i> Mineflayer Bot</h1>
+                <div id="connection-status" class="status-connected">
+                    <i class="fas fa-circle"></i> <span id="status-text">Đang kết nối...</span>
+                </div>
+            </div>
+
+            <div class="sidebar-sections">
+                <section class="status-section">
+                    <h2><i class="fas fa-heart"></i> Trạng thái</h2>
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <span class="status-label"><i class="fas fa-heartbeat"></i> Máu:</span>
+                            <span id="health" class="status-value">20</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label"><i class="fas fa-utensils"></i> Thức ăn:</span>
+                            <span id="food" class="status-value">20</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label"><i class="fas fa-map-marker-alt"></i> Vị trí:</span>
+                            <span id="position" class="status-value">0, 64, 0</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="inventory-section">
+                    <h2><i class="fas fa-backpack"></i> Túi đồ</h2>
+                    <div id="inventory-display" class="inventory-grid"></div>
+                </section>
+
+                <section class="chat-section">
+                    <h2><i class="fas fa-comments"></i> Chat</h2>
+                    <div id="chat-log" class="chat-container"></div>
+                    <form id="chat-input-form" class="chat-form">
+                        <input type="text" id="message-input" placeholder="Nhập lệnh..." autocomplete="off">
+                        <button type="submit"><i class="fas fa-paper-plane"></i></button>
+                    </form>
+                </section>
+            </div>
         </aside>
 
         <main id="main-content">
-            <h2>👀 Minecraft Viewer</h2>
+            <div class="viewer-header">
+                <h2><i class="fas fa-eye"></i> Minecraft Viewer</h2>
+                <div class="viewer-controls">
+                    <button id="toggle-viewer" class="control-btn">
+                        <i class="fas fa-eye-slash"></i> Ẩn/Hiện
+                    </button>
+                    <button id="reset-viewer" class="control-btn">
+                        <i class="fas fa-sync-alt"></i> Reset
+                    </button>
+                    <button id="change-view" class="control-btn">
+                        <i class="fas fa-camera"></i> Góc nhìn
+                    </button>
+                    <button id="fullscreen-btn" class="control-btn">
+                        <i class="fas fa-expand"></i> Toàn màn hình
+                    </button>
+                </div>
+            </div>
+
             <div id="viewer-container">
-                <iframe id="viewer-iframe" style="width:100%; height:100%; border:none; display:none;"></iframe>
-                <div id="viewer-status">⏳ Đang chờ kết nối viewer...</div>
+                <iframe id="viewer-iframe" allowfullscreen></iframe>
+                <div id="viewer-status">
+                    <i class="fas fa-spinner fa-spin"></i> Đang kết nối viewer...
+                </div>
             </div>
-            
-            <div class="viewer-controls" style="margin-top: 10px;">
-                <button id="toggle-viewer">Ẩn/Hiện Viewer</button>
-                <button id="reset-viewer">Reset Góc Nhìn</button>
+
+            <div class="control-panel">
+                <div class="movement-controls">
+                    <div class="movement-row">
+                        <button id="move-forward" class="movement-btn"><i class="fas fa-arrow-up"></i></button>
+                    </div>
+                    <div class="movement-row">
+                        <button id="move-left" class="movement-btn"><i class="fas fa-arrow-left"></i></button>
+                        <button id="move-back" class="movement-btn"><i class="fas fa-arrow-down"></i></button>
+                        <button id="move-right" class="movement-btn"><i class="fas fa-arrow-right"></i></button>
+                    </div>
+                    <div class="movement-row">
+                        <button id="jump-btn" class="movement-btn"><i class="fas fa-arrow-alt-circle-up"></i></button>
+                        <button id="sneak-btn" class="movement-btn"><i class="fas fa-arrow-alt-circle-down"></i></button>
+                    </div>
+                </div>
+
+                <div class="action-controls">
+                    <button id="attack-btn" class="action-btn"><i class="fas fa-fist-raised"></i> Tấn công</button>
+                    <button id="mine-btn" class="action-btn"><i class="fas fa-hammer"></i> Đào</button>
+                    <button id="place-btn" class="action-btn"><i class="fas fa-cube"></i> Đặt</button>
+                    <button id="stop-btn" class="action-btn danger"><i class="fas fa-stop-circle"></i> Dừng</button>
+                </div>
+                <div id="mini-map">
+                    <canvas id="map-canvas"></canvas>
+                    <div id="player-marker"></div>
+                </div>
+
+                <div class="macro-controls">
+                    <h3><i class="fas fa-magic"></i> Macro Lệnh Nhanh</h3>
+                    <div class="macro-grid">
+                    
+                        <div class="macro-column">
+                            <button id="macro-follow" class="macro-btn"><i class="fas fa-user-friends"></i> Theo tôi</button>
+                            <button id="macro-protect" class="macro-btn"><i class="fas fa-shield-alt"></i> Bảo vệ tôi</button>
+                            <button id="macro-find-dia" class="macro-btn"><i class="fas fa-gem"></i> Tìm Kim Cương</button>
+                            <button id="macro-collect-wood" class="macro-btn"><i class="fas fa-tree"></i> Thu Gỗ (64)</button>
+                            <button id="macro-check-inv" class="macro-btn"><i class="fas fa-box-open"></i> Kiểm tra túi</button>
+                        </div>
+                   
+                        <div class="macro-column">
+                            <button id="macro-strip-mine" class="macro-btn"><i class="fas fa-pickaxe"></i> Đào hầm</button>
+                            <button id="macro-hunt-cow" class="macro-btn"><i class="fas fa-drumstick-bite"></i> Săn Bò</button>
+                            <button id="macro-farm-wheat" class="macro-btn"><i class="fas fa-wheat-alt"></i> Làm ruộng Lúa</button>
+                            <button id="macro-build-house" class="macro-btn"><i class="fas fa-home"></i> Xây nhà</button>
+                            <button id="macro-scan-ores" class="macro-btn"><i class="fas fa-binoculars"></i> Quét quặng</button>
+                        </div>
+                     
+                        <div class="macro-column">
+                            <button id="macro-sleep" class="macro-btn"><i class="fas fa-bed"></i> Đi ngủ</button>
+                            <button id="macro-clean-inv" class="macro-btn"><i class="fas fa-broom"></i> Dọn túi</button>
+                            <button id="macro-deposit-all" class="macro-btn"><i class="fas fa-archive"></i> Cất đồ</button>
+                            <button id="macro-flatten-10" class="macro-btn"><i class="fas fa-layer-group"></i> Làm phẳng (10)</button>
+                            <button id="macro-equip-best" class="macro-btn"><i class="fas fa-tools"></i> Trang bị</button>
+                        </div>
+                     
+                        <div class="macro-column">
+                             <button id="macro-breed-cow" class="macro-btn"><i class="fas fa-heart"></i> Cho Bò ăn</button>
+                            <button id="macro-get-coords" class="macro-btn"><i class="fas fa-location-arrow"></i> Tọa độ tôi</button>
+                            <button id="macro-capabilities" class="macro-btn"><i class="fas fa-question-circle"></i> Khả năng?</button>
+                             <button id="macro-stop-task" class="macro-btn danger"><i class="fas fa-hand-paper"></i> Dừng Lệnh</button>
+                           
+                        </div>
+                    </div>
+                </div>
+
+                <div class="waypoint-controls">
+                    <h3><i class="fas fa-map-marked-alt"></i> Điểm đánh dấu</h3>
+                    <div class="waypoint-form">
+                        <input type="text" id="waypoint-name" placeholder="Tên điểm">
+                        <button id="save-waypoint" class="waypoint-btn"><i class="fas fa-save"></i> Lưu</button>
+                        <button id="goto-waypoint" class="waypoint-btn"><i class="fas fa-walking"></i> Đi tới</button>
+                        <button id="list-waypoints" class="waypoint-btn"><i class="fas fa-list"></i> Danh sách</button>
+                    </div>
+                </div>
             </div>
+
         </main>
     </div>
 
-    <!-- Chỉ cần Socket.IO và client.js -->
     <script src="/socket.io/socket.io.js"></script>
     <script src="/js/client.js"></script>
-    
-    <script>
-        // Xử lý nút ẩn/hiện viewer
-        document.getElementById('toggle-viewer').addEventListener('click', function() {
-            const container = document.getElementById('viewer-container');
-            container.style.display = container.style.display === 'none' ? 'block' : 'none';
-        });
-        
-        // Xử lý nút reset góc nhìn (sẽ được cập nhật trong client.js)
-        document.getElementById('reset-viewer').addEventListener('click', function() {
-            // Gọi hàm reset từ client.js khi viewer đã sẵn sàng
-            if (window.resetViewerCamera) {
-                window.resetViewerCamera();
-            }
-        });
-    </script>
 </body>
 </html>

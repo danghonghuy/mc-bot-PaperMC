@@ -1,0 +1,1940 @@
+// --- START OF FILE botWeb.js (Updated with Web Controls - Minimal Changes) ---
+
+// server_web.js (FINAL - FULL BOT LOGIC + WEB INTERFACE + VIEWER ENABLED - COMPLETE CODE + Refined Viewer Port Handling + No Delay)
+
+// --- Requires Section ---
+require("dotenv").config();
+const mineflayer = require("mineflayer");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { pathfinder, Movements, goals } = require("mineflayer-pathfinder");
+const mcData = require("minecraft-data");
+const collectBlock = require("mineflayer-collectblock");
+const { Vec3 } = require("vec3"); // *** MODIFIED: Ensure Vec3 is imported here for getVec3FromFace ***
+const http = require("http");
+const express = require("express");
+const { Server } = require("socket.io");
+const path = require("path");
+const { mineflayer: mineflayerViewer } = require("prismarine-viewer"); // VIEWER IS ENABLED // *** MODIFIED: Renamed import to avoid conflict ***
+const net = require("net");
+
+// --- Import ALL Command and Auto Modules ---
+const autoLoot = require("./auto_loot");
+const cleanInventoryCommands = require("./commands/clean_inventory");
+const followCommands = require("./commands/follow");
+const coordsCommands = require("./commands/coords");
+const chatCommands = require("./commands/chat");
+const findCommands = require("./commands/find");
+const inventoryCommands = require("./commands/inventory");
+const protectCommands = require("./commands/protect");
+const collectCommands = require("./commands/collect");
+const navigateCommands = require("./commands/navigate");
+const scanCommands = require("./commands/scan");
+const farmCommands = require("./commands/farm");
+const craftCommands = require("./commands/craft");
+const infoCommands = require("./commands/info");
+const sleepCommands = require("./commands/sleep");
+const stripMineCommands = require("./commands/strip_mine");
+const huntCommands = require("./commands/hunt");
+const depositCommands = require("./commands/deposit");
+const equipCommands = require("./commands/equip_item");
+const eventNotifierCommands = require("./event_notifier");
+const autoEatCommands = require("./auto_eat");
+const { flattenArea, stopFlatten } = require("./commands/flatten_area");
+const homeCommands = require("./commands/home");
+const autoTorch = require("./commands/auto_torch");
+const autoDefend = require("./commands/auto_defend");
+const farmWheatCommands = require("./commands/farm_wheat");
+const translateIdentifyCommands = require("./commands/translate_identify");
+const {
+  roundCoord,
+  formatCoords,
+  sleep,
+  translateToEnglishId,
+  getVec3FromFace, // *** NEW/MODIFIED: Ensure this is imported from utils ***
+} = require("./utils");
+// const mineflayerViewer = require("prismarine-viewer").mineflayer; // *** REMOVED: Duplicate import ***
+
+// --- Configuration ---
+const SERVER_ADDRESS = process.env.SERVER_ADDRESS || "dhhnedhhne.aternos.me";
+const SERVER_PORT = parseInt(process.env.SERVER_PORT || "21691", 10);
+const BOT_USERNAME = process.env.BOT_USERNAME || "TuiBucBoi_WebFinal"; // Use a distinct name
+const MINECRAFT_VERSION = process.env.MINECRAFT_VERSION || "1.21.4"; // *** Keep user's version ***
+const WEB_SERVER_PORT = process.env.WEB_PORT || 3000;
+const VIEWER_PORT_START = process.env.VIEWER_PORT || 5003; // *** Use user's preference ***
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+if (!GEMINI_API_KEY) {
+  console.error("LỖI: Không tìm thấy GEMINI_API_KEY!");
+  process.exit(1);
+}
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+const aiModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // *** Use updated model name ***
+
+// --- Web Server Setup ---
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+// *** NEW/MODIFIED: Correct static file serving ***
+app.use(express.static(path.join(__dirname, "public"))); // Serve CSS, JS from public
+app.get("/", (req, res) => {
+  // Serve index.html at the root
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+// Keep prismarine-viewer static serving if needed, but might not be required if just embedding
+app.use(
+  "/prismarine-viewer",
+  express.static(
+    path.join(__dirname, "node_modules", "prismarine-viewer", "public")
+  )
+);
+app.get("/viewer", (req, res) => {
+  res.sendFile(
+    path.join(
+      __dirname,
+      "node_modules",
+      "prismarine-viewer",
+      "public",
+      "index.html"
+    )
+  );
+});
+
+console.log(
+  `[Final Bot] Bot will connect to ${SERVER_ADDRESS}:${SERVER_PORT} version ${MINECRAFT_VERSION}`
+);
+console.log(
+  `[Final Bot] Web interface will run at http://localhost:${WEB_SERVER_PORT}`
+);
+
+// --- KHAI BÁO BIẾN TOÀN CỤC ---
+let viewerPort = null;
+let isViewerPortReady = false;
+// let viewerCheckInterval = null; // Not strictly needed with newer init logic
+const connectedSockets = new Map();
+const MOUSE_SENSITIVITY = 0.002; // *** NEW: Sensitivity for mouse look ***
+
+// --- Helper Functions ---
+
+// Function to check if a port is available (Keep user's function)
+async function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const tester = net
+      .createServer()
+      .once("error", (err) => {
+        // Handle EADDRINUSE specifically
+        if (err.code === "EADDRINUSE") {
+          resolve(false);
+        } else {
+          console.warn(
+            `[Port Check Warn] Error testing port ${port}: ${err.message}`
+          );
+          resolve(false); // Assume unavailable on other errors
+        }
+      })
+      .once("listening", () => {
+        tester.once("close", () => resolve(true)).close();
+      })
+      .listen(port);
+  });
+}
+
+// *** NEW/MODIFIED: Viewer initialization with port scan and timeout ***
+async function initializeViewerWithScan(
+  botInstance,
+  startPort = VIEWER_PORT_START,
+  range = 100,
+  timeout = 1000
+) {
+  console.log(
+    `[Viewer] Initializing viewer (searching ports ${startPort}-${
+      startPort + range - 1
+    })`
+  );
+  for (let port = startPort; port < startPort + range; port++) {
+    // console.log(`[Viewer] Checking port ${port}...`);
+    const isAvailable = await isPortAvailable(port);
+    if (!isAvailable) {
+      // console.log(`[Viewer] Port ${port} is not available.`);
+      continue;
+    }
+
+    console.log(
+      `[Viewer] Attempting to start viewer on available port ${port}...`
+    );
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          console.warn(
+            `[Viewer] Timeout waiting for viewer on port ${port} after ${timeout}ms.`
+          );
+          // Attempt cleanup if possible (difficult with current viewer API)
+          try {
+            if (botInstance.viewer && botInstance.viewer.close)
+              botInstance.viewer.close();
+          } catch (e) {}
+          reject(new Error(`Viewer initialization timed out on port ${port}`));
+        }, timeout);
+
+        // Use the imported mineflayerViewer
+        mineflayerViewer(botInstance, {
+          port: port,
+          firstPerson: false, // Start in third person default
+          viewDistance: "normal",
+        });
+
+        // Check if bot.viewer exists after a short delay
+        setTimeout(() => {
+          if (botInstance.viewer && botInstance.viewer.port === port) {
+            clearTimeout(timer);
+            console.log(
+              `[Viewer] Viewer successfully attached to bot on port ${port}.`
+            );
+            resolve();
+          } // No else needed, timeout handles failure implicitly if viewer doesn't attach
+        }, 500); // Delay to allow attachment
+      });
+
+      // If promise resolved (no timeout, viewer attached)
+      console.log(`[Viewer] Successfully initialized on port ${port}`);
+      return { success: true, port: port };
+    } catch (err) {
+      console.error(
+        `[Viewer] Error initializing viewer on port ${port}:`,
+        err.message
+      );
+      // Continue to the next port
+    }
+  }
+
+  // If loop finishes without success
+  console.error(
+    `[Viewer] Failed to start viewer after scanning ports ${startPort}-${
+      startPort + range - 1
+    }.`
+  );
+  return {
+    success: false,
+    message: `Failed to find available port or initialize viewer in range ${startPort}-${
+      startPort + range - 1
+    }`,
+  };
+}
+
+// --- Bot Initialization (Immediately) --- (Keep user's code)
+console.log("[Final Bot] Initiating bot connection immediately.");
+const bot = mineflayer.createBot({
+  host: SERVER_ADDRESS,
+  port: SERVER_PORT,
+  username: BOT_USERNAME,
+  version: MINECRAFT_VERSION,
+  hideErrors: false,
+  checkTimeoutInterval: 60 * 1000, // Can be increased if needed for slow connections
+
+});
+
+// --- Load Plugins --- (Keep user's code)
+bot.loadPlugin(pathfinder);
+bot.loadPlugin(collectBlock.plugin);
+
+console.log("[Final Bot] Bot instance created. Starting connection process...");
+
+// --- Initialize Bot State Variables --- (Keep user's state variables)
+bot.botInGameName = BOT_USERNAME;
+bot.defaultMove = null;
+bot.followingTarget = null;
+bot.isFollowing = false;
+bot.isFinding = false;
+bot.findingTaskDetails = null;
+bot.isProtecting = false;
+bot.protectingTarget = null;
+bot.protectionInterval = null;
+bot.isCollecting = false;
+bot.collectingTaskDetails = null;
+bot.isStripMining = false;
+bot.stripMineTaskDetails = null;
+bot.isHunting = false;
+bot.huntTaskDetails = null;
+bot.isCleaningInventory = false;
+bot.cleaningTaskDetails = null;
+bot.isDepositing = false;
+bot.depositTaskDetails = null;
+bot.isSleeping = false;
+bot.isFlattening = false;
+bot.flattenStopRequested = false;
+bot.flattenTemporaryChests = [];
+bot.isBuilding = false;
+bot.buildingTaskDetails = null;
+bot.waypoints = {};
+bot.autoEatInterval = null;
+bot.autoTorchInterval = null;
+bot.stuckDetectionInterval = null;
+bot.badZones = {};
+bot.isDefending = false;
+bot.isFarmingWheat = false;
+bot.farmingTaskDetails = null;
+bot.isLooting = false;
+bot.positionUpdateInterval = null;
+bot.chatHistory = [];
+const MAX_CHAT_HISTORY = 10;
+
+// --- REMOVED checkAndViewerPort function (replaced by new init logic) ---
+
+// --- stopAllTasks Function --- (Keep user's function mostly, add web reason)
+function stopAllTasks(botInstanceRef, usernameOrReason) {
+  let stoppedSomething = false;
+  const reasonText =
+    typeof usernameOrReason === "string" ? usernameOrReason : "Unknown Reason";
+  console.log(
+    `[Stop All - Final Bot] Received stop request. Reason: ${reasonText}`
+  );
+  io.emit("bot_status", `Dừng nhiệm vụ: ${reasonText}`);
+
+  if (!botInstanceRef) {
+    console.error("[Stop All - Final Bot] Invalid bot instance!");
+    return;
+  }
+  try {
+    botInstanceRef.clearControlStates(); // Stop basic movement/actions
+    console.log("[Stop All Final] Cleared control states.");
+    stoppedSomething = true; // Clearing controls counts
+  } catch (e) {
+    console.error("[Stop All Final] Error clearing states:", e.message);
+  }
+  try {
+    if (botInstanceRef.pathfinder?.isMoving()) {
+      botInstanceRef.pathfinder.stop();
+      console.log("[Stop All Final] Stopped pathfinder.");
+      stoppedSomething = true;
+    }
+  } catch (e) {
+    console.error("[Stop All Final] Error stopping pathfinder:", e.message);
+  }
+  try {
+    botInstanceRef.stopDigging(); // Stop current digging
+  } catch (e) {
+    /* Ignore */
+  }
+  try {
+    botInstanceRef.stopUsingItem(); // Stop placing/eating etc.
+  } catch (e) {
+    /* Ignore */
+  }
+
+  // Keep the rest of the user's stop logic for specific tasks
+  let autoDefendHandled = false;
+  if (botInstanceRef.isDefending && reasonText !== "Bị tấn công") {
+    if (autoDefend?.stopDefending) {
+      autoDefend.stopDefending(reasonText);
+      stoppedSomething = true;
+    } else {
+      console.warn("[Stop All Final] autoDefend.stopDefending not found!");
+      botInstanceRef.isDefending = false;
+      stoppedSomething = true;
+    }
+    autoDefendHandled = true;
+  } else if (botInstanceRef.isDefending && reasonText === "Bị tấn công") {
+    console.log("[Stop All Final] Auto-defend active, not stopping it.");
+    autoDefendHandled = true;
+  }
+
+  if (botInstanceRef.isLooting && autoLoot?.stopAutoLoot) {
+    console.log("[Stop All Final] Stopping auto-loot task...");
+    autoLoot.stopAutoLoot(reasonText);
+    // stoppedSomething = true; // Looting is background, maybe don't count?
+  } else if (botInstanceRef.isLooting) {
+    console.warn("[Stop All Final] autoLoot.stopAutoLoot not found!");
+    botInstanceRef.isLooting = false;
+  }
+
+  if (botInstanceRef.isFlattening) {
+    console.log("[Stop All Final] Stopping flatten task...");
+    stopFlatten(botInstanceRef, reasonText);
+    stoppedSomething = true;
+  }
+  if (botInstanceRef.isFinding) {
+    console.log("[Stop All Final] Stopping find task...");
+    findCommands.stopFinding(botInstanceRef, reasonText);
+    stoppedSomething = true;
+  }
+  if (botInstanceRef.isFollowing) {
+    console.log("[Stop All Final] Stopping follow task...");
+    followCommands.stopFollowing(botInstanceRef, reasonText);
+    stoppedSomething = true;
+  }
+  if (botInstanceRef.isProtecting) {
+    console.log("[Stop All Final] Stopping protect task...");
+    protectCommands.stopProtecting(botInstanceRef, reasonText);
+    stoppedSomething = true;
+  }
+  if (botInstanceRef.isCollecting) {
+    console.log("[Stop All Final] Stopping collect task...");
+    collectCommands.stopCollecting(botInstanceRef, reasonText);
+    stoppedSomething = true;
+  }
+  if (botInstanceRef.isCleaningInventory) {
+    console.log("[Stop All Final] Stopping clean inventory task...");
+    cleanInventoryCommands.stopCleaningInventory(botInstanceRef, reasonText);
+    stoppedSomething = true;
+  }
+  if (botInstanceRef.isStripMining) {
+    console.log("[Stop All Final] Stopping strip mine task...");
+    stripMineCommands.stopStripMining(botInstanceRef, reasonText);
+    stoppedSomething = true;
+  }
+  if (botInstanceRef.isHunting) {
+    console.log("[Stop All Final] Stopping hunt task...");
+    huntCommands.stopHunting(botInstanceRef, reasonText);
+    stoppedSomething = true;
+  }
+  if (botInstanceRef.isDepositing) {
+    console.log("[Stop All Final] Stopping deposit task...");
+    depositCommands.stopDepositTask(botInstanceRef, reasonText);
+    stoppedSomething = true;
+  }
+  if (botInstanceRef.isFarmingWheat) {
+    console.log("[Stop All Final] Stopping farm wheat task...");
+    if (farmWheatCommands?.stopFarmingWheat) {
+      farmWheatCommands.stopFarmingWheat(reasonText);
+      stoppedSomething = true;
+    } else {
+      console.warn("farmWheatCommands.stopFarmingWheat not found!");
+      botInstanceRef.isFarmingWheat = false;
+      stoppedSomething = true;
+    }
+  }
+  if (botInstanceRef.isBuilding && homeCommands?.stopBuilding) {
+    // Use user's build stop
+    console.log("[Stop All Final] Stopping building task...");
+    homeCommands.stopBuilding(botInstanceRef, reasonText);
+    // isBuilding state should be managed within homeCommands ideally
+    stoppedSomething = true;
+  } else if (botInstanceRef.isBuilding) {
+    console.warn("[Stop All Final] homeCommands.stopBuilding not found!");
+    botInstanceRef.isBuilding = false; // Force state reset
+    botInstanceRef.buildingTaskDetails = null;
+    stoppedSomething = true;
+  }
+  if (botInstanceRef.isSleeping) {
+    console.log("[Stop All Final] Waking up bot...");
+    try {
+      botInstanceRef.wake(); // Let 'wake' event handle state change
+      stoppedSomething = true;
+    } catch (e) {
+      console.error("[Stop All Final] Error waking up:", e.message);
+      botInstanceRef.isSleeping = false; // Force state if wake fails
+      stoppedSomething = true;
+    }
+  }
+
+  // Keep user's chat logic, add the web UI stop reason
+  const silentReasons = [
+    "Hệ thống",
+    "Lỗi hệ thống",
+    "Bot chết",
+    "Bị kick",
+    "Mất kết nối",
+    "Bị kẹt",
+    "Bị tấn công",
+    "Hoàn thành",
+    "Hoàn thành thu hoạch",
+    "Hoàn thành xây ruộng",
+    "Thất bại",
+    "Vòng lặp kết thúc bất thường",
+    "Web UI Stop Button",
+    "Web UI Action", // *** NEW: Add web reasons ***
+  ];
+  const userInitiatedStop =
+    typeof usernameOrReason === "string" &&
+    !silentReasons.includes(reasonText) &&
+    !reasonText.startsWith("Lỗi");
+
+  if (botInstanceRef.entity) {
+    // Check bot still connected
+    if (stoppedSomething && userInitiatedStop) {
+      console.log(
+        `[Stop All Final] Tasks stopped by user: ${usernameOrReason}.`
+      );
+      try {
+        botInstanceRef.chat(`Ok ${usernameOrReason}, đã dừng.`);
+      } catch (e) {
+        console.error("[Stop All Final] Error sending chat:", e);
+      }
+    } else if (
+      !stoppedSomething &&
+      userInitiatedStop &&
+      !botInstanceRef.isDefending
+    ) {
+      console.log(
+        `[Stop All Final] No active task to stop for user: ${usernameOrReason}.`
+      );
+      try {
+        botInstanceRef.chat(`Tôi không đang làm gì, ${usernameOrReason}.`);
+      } catch (e) {
+        console.error("[Stop All Final] Error sending chat:", e);
+      }
+    } else if (
+      !stoppedSomething &&
+      userInitiatedStop &&
+      botInstanceRef.isDefending &&
+      !autoDefendHandled
+    ) {
+      console.log(
+        `[Stop All Final] Not stopping active defense for user: ${usernameOrReason}.`
+      );
+      try {
+        botInstanceRef.chat(
+          `Tôi đang phòng thủ, không dừng được, ${usernameOrReason}.`
+        );
+      } catch (e) {
+        console.error("[Stop All Final] Error sending chat:", e);
+      }
+    } else if (stoppedSomething && !userInitiatedStop) {
+      console.log(
+        `[Stop All Final] Tasks stopped by system/event: ${reasonText}.`
+      );
+      // Optionally emit system message to web UI unless it was a web action
+      if (
+        reasonText !== "Web UI Stop Button" &&
+        reasonText !== "Web UI Action"
+      ) {
+        io.emit("system_message", { message: `Nhiệm vụ dừng: ${reasonText}` });
+      }
+    }
+  } else {
+    console.log("[Stop All Final] Bot not in game, cannot chat.");
+  }
+  console.log("[Stop All - Final Bot] Finished processing stop request.");
+}
+
+// *** NEW: Function to format inventory for web UI ***
+function getFormattedInventory(botInstance) {
+  if (!botInstance?.inventory) {
+    return [];
+  }
+  // Use the simple item aggregation from client.js logic
+  const items = botInstance.inventory.items();
+  const aggregatedItems = {};
+  items.forEach((item) => {
+    if (!item) return; // Skip null items
+    const key = item.name + (item.metadata || 0); // Aggregate by name + metadata for basic variations
+    if (!aggregatedItems[key]) {
+      aggregatedItems[key] = {
+        name: item.name,
+        displayName: item.displayName,
+        count: 0,
+        type: item.type,
+        metadata: item.metadata,
+        // slot: item.slot // Keep slot if needed for clicking later?
+      };
+    }
+    aggregatedItems[key].count += item.count;
+  });
+  // Convert back to array and sort by name
+  return Object.values(aggregatedItems).sort((a, b) =>
+    a.displayName.localeCompare(b.displayName)
+  );
+}
+
+// --- Bot Event Handlers ('spawn', 'chat', 'health', 'end', etc.) ---
+bot.once("spawn", async () => {
+  // Keep user's initial spawn logic
+  // const usedPorts = await checkUsedPorts(); // This can be removed if not needed
+  // console.log(`Các cổng đang bận: ${usedPorts.join(', ')}`);
+
+  console.log("[Bot] Starting viewer initialization after spawn...");
+  const viewerResult = await initializeViewerWithScan(bot, VIEWER_PORT_START); // *** Use new init function ***
+
+  if (viewerResult.success) {
+    viewerPort = viewerResult.port;
+    isViewerPortReady = true;
+    console.log(`[Viewer Ready] Broadcasting port ${viewerPort}.`);
+    io.emit("viewer_port", viewerPort); // Broadcast port to all clients
+    // No need for viewer_ready event if client handles viewer_port directly
+  } else {
+    console.error("[Bot] Viewer initialization failed:", viewerResult.message);
+    io.emit(
+      "viewer_error",
+      viewerResult.message || "Không thể khởi tạo viewer."
+    );
+    // Keep user's fallback logic if desired
+    // const fallbackResult = await initializeViewer(bot, 6000);
+    // if (fallbackResult.success) { io.emit("viewer_ready", { port: fallbackResult.port }); }
+  }
+
+  bot.botInGameName = bot.username; // Update bot name once spawned
+  console.log(
+    `[Final Bot Spawn] *** Bot (${bot.botInGameName}) đã vào server! ***`
+  );
+  io.emit("bot_status", "Đã vào server");
+  io.emit("bot_info", { username: bot.botInGameName }); // Emit info again
+
+  const startPos = bot.entity.position;
+  console.log(`[Final Bot Spawn] Initial Position: ${formatCoords(startPos)}`);
+  io.emit("bot_position", {
+    x: roundCoord(startPos.x),
+    y: roundCoord(startPos.y),
+    z: roundCoord(startPos.z),
+  });
+
+  // Full State Reset on Spawn (Keep user's resets)
+  console.log("[Final Bot Spawn] Resetting full state...");
+  bot.isFollowing = false;
+  bot.followingTarget = null;
+  bot.isFinding = false;
+  bot.findingTaskDetails = null;
+  bot.isProtecting = false;
+  bot.protectingTarget = null;
+  if (bot.protectionInterval) clearInterval(bot.protectionInterval);
+  bot.protectionInterval = null;
+  bot.isCollecting = false;
+  bot.collectingTaskDetails = null;
+  bot.isStripMining = false;
+  bot.stripMineTaskDetails = null;
+  bot.isCleaningInventory = false;
+  bot.cleaningTaskDetails = null;
+  bot.isHunting = false;
+  bot.huntTaskDetails = null;
+  bot.isDepositing = false;
+  bot.depositTaskDetails = null;
+  bot.isSleeping = false;
+  bot.isBuilding = false;
+  bot.buildingTaskDetails = null;
+  bot.waypoints = bot.waypoints || {}; // Ensure waypoints object exists
+  bot.isFlattening = false;
+  bot.flattenStopRequested = false;
+  bot.flattenTemporaryChests = [];
+  if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval);
+  bot.stuckDetectionInterval = null;
+  if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval);
+  bot.autoTorchInterval = null;
+  bot.badZones = {};
+  bot.isDefending = false;
+  bot.isFarmingWheat = false;
+  bot.farmingTaskDetails = null;
+  bot.isLooting = false;
+  if (bot.positionUpdateInterval) {
+    clearInterval(bot.positionUpdateInterval);
+    bot.positionUpdateInterval = null;
+  }
+  // isViewerPortReady and viewerPort are handled by the new init logic
+
+  // Initialize Movements (Keep user's logic)
+  console.log("[Final Bot Spawn] Initializing Movements...");
+  try {
+    const currentMcData = mcData(bot.version);
+    if (!currentMcData) throw new Error("Cannot load mcData!");
+    bot.mcData = currentMcData; // Store for easier access later if needed
+    if (bot.pathfinder) bot.pathfinder.thinkTimeout = 10000;
+    bot.defaultMove = new Movements(bot, currentMcData);
+    // Keep user's movement settings
+    bot.defaultMove.allowSprinting = true;
+    bot.defaultMove.allowParkour = true;
+    bot.defaultMove.canDig = true;
+    bot.defaultMove.maxDropDown = 4;
+    bot.defaultMove.allow1by1towers = true;
+    bot.defaultMove.canPlace = true;
+
+    // Configure blocks (Keep user's logic, ensure sets exist)
+    bot.defaultMove.blocksToPlace = bot.defaultMove.blocksToPlace || new Set();
+    bot.defaultMove.blocksToAvoid = bot.defaultMove.blocksToAvoid || new Set();
+    bot.defaultMove.blocksCantBreak =
+      bot.defaultMove.blocksCantBreak || new Set();
+
+    const scaffoldBlocks = [
+      "dirt",
+      "cobblestone",
+      "netherrack",
+      "cobbled_deepslate",
+      "stone",
+      "oak_planks",
+      "spruce_planks",
+      "birch_planks",
+    ];
+    scaffoldBlocks.forEach((name) => {
+      const block = currentMcData.blocksByName[name];
+      if (block) bot.defaultMove.blocksToPlace.add(block.id);
+    });
+    const blocksToAvoidNames = [
+      "lava",
+      "fire",
+      "cactus",
+      "sweet_berry_bush",
+      "powder_snow",
+      "magma_block",
+    ];
+    blocksToAvoidNames.forEach((name) => {
+      const block = currentMcData.blocksByName[name];
+      if (block) bot.defaultMove.blocksToAvoid.add(block.id);
+    });
+    const blocksCantBreakNames = [
+      "chest",
+      "ender_chest",
+      "furnace",
+      "blast_furnace",
+      "smoker",
+      "crafting_table",
+      "enchanting_table",
+      "anvil",
+      "beacon",
+      "bed",
+      "respawn_anchor",
+    ];
+    blocksCantBreakNames.forEach((name) => {
+      const block = currentMcData.blocksByName[name];
+      if (block) bot.defaultMove.blocksCantBreak.add(block.id);
+    });
+
+    if (bot.pathfinder) {
+      bot.pathfinder.setMovements(bot.defaultMove);
+      console.log("[Final Bot Spawn] Pathfinder Movements set.");
+    } else {
+      console.error("[Final Bot Spawn] Pathfinder not found!");
+      io.emit("bot_error", "Lỗi: Pathfinder không khởi tạo!");
+    }
+  } catch (err) {
+    console.error("[Final Bot Spawn] Error initializing Movements:", err);
+    io.emit("bot_error", `Lỗi Movements: ${err.message}`);
+  }
+
+  // Initialize ALL Auto Modules (Keep user's logic)
+  console.log("[Final Bot Spawn] Initializing Auto Modules...");
+  try {
+    const VALUABLE_ITEMS = [
+      /* list */
+    ];
+    autoLoot.initializeAutoLoot(bot, VALUABLE_ITEMS, io);
+  } catch (e) {
+    console.error("[Final Bot Spawn] Error initializing AutoLoot:", e);
+  }
+  try {
+    eventNotifierCommands.initializeEventNotifier(bot, io);
+  } catch (e) {
+    console.error("[Final Bot Spawn] Error initializing EventNotifier:", e);
+  }
+  try {
+    autoEatCommands.initializeAutoEat(bot, io);
+  } catch (e) {
+    console.error("[Final Bot Spawn] Error initializing AutoEat:", e);
+  }
+  try {
+    autoTorch.initializeAutoTorch(bot, aiModel, io);
+  } catch (e) {
+    console.error("[Final Bot Spawn] Error initializing AutoTorch:", e);
+  }
+  try {
+    autoDefend.initializeAutoDefend(bot, stopAllTasks, io);
+  } catch (e) {
+    console.error("[Final Bot Spawn] Error initializing AutoDefend:", e);
+  }
+  try {
+    farmWheatCommands.initialize(bot, io);
+  } catch (e) {
+    console.error("[Final Bot Spawn] Error initializing FarmWheat:", e);
+  }
+
+  // Start Auto Torch Interval (Keep user's logic)
+  console.log("[Final Bot Spawn] Starting AutoTorch Interval...");
+  if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval);
+  const AUTO_TORCH_INTERVAL_MS = 2500;
+  bot.autoTorchInterval = setInterval(async () => {
+    if (
+      bot?.entity &&
+      !bot.isSleeping &&
+      !bot.isDefending &&
+      !autoTorch.isPlacingTorch &&
+      !bot.pathfinder?.isMoving()
+    ) {
+      // Check pathfinder too
+      try {
+        await autoTorch.checkAndPlaceTorch();
+      } catch (error) {
+        /* console.error("[Auto Torch Interval Final] Lỗi:", error.message); */
+      }
+    }
+  }, AUTO_TORCH_INTERVAL_MS);
+  console.log(`[Final Bot Spawn] AutoTorch Interval started.`);
+
+  // Start Position Update Interval (Keep user's logic)
+  console.log("[Final Bot Spawn] Starting Position Update Interval...");
+  if (bot.positionUpdateInterval) clearInterval(bot.positionUpdateInterval);
+  const POSITION_UPDATE_INTERVAL_MS = 1000; // Keep 1s for UI responsiveness
+  bot.positionUpdateInterval = setInterval(() => {
+    if (bot?.entity) {
+      const pos = bot.entity.position;
+      io.emit("bot_position", {
+        x: roundCoord(pos.x),
+        y: roundCoord(pos.y),
+        z: roundCoord(pos.z),
+      });
+    } else {
+      if (bot.positionUpdateInterval) {
+        clearInterval(bot.positionUpdateInterval);
+        bot.positionUpdateInterval = null;
+        console.log(
+          "[Position Update] Bot entity not found, stopping interval."
+        );
+      }
+    }
+  }, POSITION_UPDATE_INTERVAL_MS);
+  console.log(
+    `[Final Bot Spawn] Position update interval started (${POSITION_UPDATE_INTERVAL_MS}ms).`
+  );
+
+  // Send welcome message (Keep user's logic)
+  console.log("[Final Bot Spawn] Setting welcome message timeout...");
+  setTimeout(() => {
+    try {
+      if (bot?.entity)
+        bot.chat(
+          `Bot AI (${bot.botInGameName}) đã kết nối! Hỏi gì đi nào? :D (Gõ 'bạn làm được gì?')`
+        );
+    } catch (e) {
+      console.error("Error sending initial chat message:", e);
+    }
+  }, 1500);
+
+  // Pathfinder event listeners (Keep user's logic)
+  console.log("[Final Bot Spawn] Adding Pathfinder Listeners...");
+  const pathfinderEvents = [
+    "goal_reached",
+    "path_reset",
+    "cannotFindPath",
+    "interrupted",
+    "goal_non_reachable",
+  ];
+  pathfinderEvents.forEach((eventName) => {
+    const pf = bot.pathfinder;
+    if (pf && pf.on) {
+      // Attach to pathfinder instance if possible
+      pf.on(eventName, (...args) => {
+        // Keep user's detailed error handling logic inside here
+        const reason = args[0]?.message || args[0]?.toString() || eventName;
+        const isPathError =
+          eventName === "cannotFindPath" ||
+          eventName === "goal_non_reachable" ||
+          eventName === "interrupted";
+        console.log(
+          `[Pathfinder Event Final] Event: ${eventName}, Reason: ${reason}`
+        );
+        if (isPathError) {
+          io.emit("bot_error", `Lỗi di chuyển: ${reason}`);
+          // --- Full path error handling (Keep user's) ---
+          if (bot.isFinding && findCommands.handleFindPathError)
+            findCommands.handleFindPathError(bot, reason);
+          else if (
+            bot.isCleaningInventory &&
+            cleanInventoryCommands.finishCleaningInventory
+          )
+            cleanInventoryCommands.finishCleaningInventory(
+              bot,
+              false,
+              `Path error: ${reason}`
+            );
+          else if (bot.isDepositing && depositCommands.stopDepositTask)
+            depositCommands.stopDepositTask(bot, `Path error: ${reason}`);
+          else if (bot.isCollecting && bot.collectingTaskDetails) {
+            bot.collectingTaskDetails.currentTarget = null;
+            bot.collectingTaskDetails.status = "idle";
+            console.warn(
+              `[Collect Path Error Final] ${reason}. Finding new target.`
+            );
+          } else if (bot.isStripMining && stripMineCommands.stopStripMining)
+            stripMineCommands.stopStripMining(bot, `Path error: ${reason}`);
+          else if (bot.isHunting && huntCommands.stopHunting)
+            huntCommands.stopHunting(bot, `Path error: ${reason}`);
+          else if (bot.isBuilding && homeCommands.handleBuildPathError)
+            homeCommands.handleBuildPathError(bot, reason);
+          else if (bot.isFlattening) {
+            console.warn(`[Flatten Path Error Final] ${reason}. Stopping.`);
+            stopFlatten(bot, `Path error: ${reason}`);
+          } else if (bot.isFarmingWheat && bot.pathfinder?.isMoving()) {
+            if (farmWheatCommands?.stopFarmingWheat) {
+              farmWheatCommands.stopFarmingWheat(
+                `Lỗi di chuyển: ${reason}`,
+                true
+              );
+            }
+          } else if (
+            bot.pathfinder?.isMoving() &&
+            !bot.isDefending &&
+            !bot.isFollowing
+          ) {
+            console.warn(
+              `[Pathfinder Error Final] Lỗi khi di chuyển tự do: ${reason}. Dừng.`
+            );
+            stopAllTasks(bot, `Lỗi di chuyển: ${reason}`);
+          } else if (bot.isFollowing && followCommands?.handleFollowPathError) {
+            followCommands.handleFollowPathError(bot, reason);
+          } else if (bot.isDefending && isPathError) {
+            console.warn(
+              `[Pathfinder Error Final] Lỗi di chuyển khi phòng thủ: ${reason}. (Auto Defend xử lý)`
+            );
+          }
+        }
+        if (
+          bot.isFinding &&
+          eventName === "goal_reached" &&
+          findCommands.handleFindGoalReached
+        ) {
+          findCommands.handleFindGoalReached(bot);
+        }
+        if (
+          bot.isFollowing &&
+          eventName === "goal_reached" &&
+          followCommands?.handleFollowGoalReached
+        ) {
+          followCommands.handleFollowGoalReached(bot);
+        }
+      });
+    } else {
+      console.warn(
+        "[Final Bot Spawn] Could not attach specific pathfinder listeners."
+      );
+      // Fallback to bot.on if necessary, though less ideal
+    }
+  });
+  console.log("[Final Bot Spawn] Pathfinder Listeners Added.");
+
+  // Send initial health/food status & Inventory
+  io.emit("health", { health: bot.health, food: bot.food });
+  io.emit("inventory_update", getFormattedInventory(bot)); // *** NEW: Send initial inventory ***
+
+  console.log("[Final Bot Spawn] Spawn handler complete.");
+});
+
+// *** NEW: Listen for inventory changes globally ***
+bot.on("inventoryUpdate", () => {
+  // console.log("[Inventory Update] Sending update to web clients."); // Can be noisy
+  io.emit("inventory_update", getFormattedInventory(bot));
+});
+
+bot.on("chat", async (username, message) => {
+  // Keep user's entire chat processing logic (history, stop, refuse, confirm, AI classification, command execution)
+  // ... (user's existing code here) ...
+  io.emit("chat", { username, message }); // Send raw chat to web clients
+  if (username === bot.username || !message) return; // Ignore self or empty messages
+
+  // Basic chat logic (history, stop keywords, confirmations)
+  console.log("[Final Bot Chat] Processing basic chat logic...");
+  try {
+    const timestamp = new Date().toLocaleTimeString();
+    const historyEntry = `[${timestamp}] <${username}> ${message}`;
+    bot.chatHistory.push(historyEntry);
+    if (bot.chatHistory.length > MAX_CHAT_HISTORY) {
+      bot.chatHistory.shift();
+    }
+  } catch (histError) {
+    console.error("Error adding to chat history:", histError);
+  }
+  const trimmedMessage = message.trim();
+  const lowerMessage = trimmedMessage.toLowerCase();
+  console.log(`[Chat In Final Bot] <${username}> ${trimmedMessage}`);
+  if (!trimmedMessage) return;
+
+  const isBusy =
+    bot.isFinding ||
+    bot.isFollowing ||
+    bot.isProtecting ||
+    bot.isDefending ||
+    bot.isCollecting ||
+    bot.isSleeping ||
+    bot.isStripMining ||
+    bot.isHunting ||
+    bot.isCleaningInventory ||
+    bot.isDepositing ||
+    bot.isBuilding ||
+    bot.isFlattening ||
+    bot.isFarmingWheat ||
+    bot.pathfinder?.isMoving(); // Check pathfinder
+
+  const stopKeywords = [
+    "dừng",
+    "stop",
+    "hủy",
+    "cancel",
+    "thôi",
+    "dừng lại",
+    "dậy đi",
+    "ngừng",
+  ];
+  if (stopKeywords.some((k) => lowerMessage.includes(k))) {
+    // Handle stop FIRST
+    console.log(`[Manual Stop Final Bot] User ${username} requested stop.`);
+    stopAllTasks(bot, username);
+    return; // IMPORTANT: Return after handling stop
+  }
+
+  // Handle confirmations/refusals
+  const refuseKeywords = [
+    "không",
+    "ko",
+    "no",
+    "đéo",
+    "deo",
+    "k",
+    "kg",
+    "hong",
+    "đếch",
+  ];
+  const farmDetails = bot.farmingTaskDetails;
+  if (
+    bot.isFarmingWheat &&
+    farmDetails?.stage === "begging" &&
+    farmDetails?.beggingTarget === username &&
+    refuseKeywords.some((k) => lowerMessage.includes(k))
+  ) {
+    console.log(`[Farm Wheat Refusal Final Bot] User ${username} refused.`);
+    if (farmWheatCommands?.handleBeggingRefusal) {
+      farmWheatCommands.handleBeggingRefusal(username);
+    } else {
+      stopAllTasks(bot, "Người dùng từ chối xin đồ");
+    }
+    return; // Handled refusal
+  }
+  if (
+    bot.isFinding &&
+    bot.findingTaskDetails?.waitingForConfirmation &&
+    username === bot.findingTaskDetails.username
+  ) {
+    const confirmKeywords = [
+      "tiếp",
+      "ok",
+      "oke",
+      "có",
+      "yes",
+      "uh",
+      "ừ",
+      "di",
+      "đi",
+      "continue",
+      "proceed",
+      "tìm tiếp",
+    ];
+    const cancelKeywords = stopKeywords; // Reuse stop keywords for cancellation
+    let confirmed = confirmKeywords.some((k) => lowerMessage.includes(k));
+    let cancelled =
+      !confirmed && cancelKeywords.some((k) => lowerMessage.includes(k)); // Check for cancel keywords if not confirmed
+    if (confirmed) {
+      if (findCommands.proceedToNextTarget)
+        findCommands.proceedToNextTarget(bot);
+      else console.error("findCommands.proceedToNextTarget is missing!");
+    } else if (cancelled) {
+      stopAllTasks(bot, username); // Treat cancel keywords as stop
+    } else {
+      try {
+        bot.chat(`${username}, nói 'tiếp' hoặc 'dừng'.`);
+      } catch (e) {}
+    }
+    return; // Handled confirmation/cancellation
+  }
+  console.log(
+    "[Final Bot Chat] Basic chat logic passed (stop/confirm/refuse handled)."
+  );
+
+  // --- Check Busy Status AFTER Stop/Confirm ---
+  if (isBusy) {
+    let reason = bot.isFinding
+      ? "tìm đồ"
+      : bot.isFollowing
+      ? "đi theo"
+      : bot.isProtecting
+      ? "bảo vệ"
+      : bot.isDefending
+      ? "phòng thủ"
+      : bot.isCollecting
+      ? "thu thập"
+      : bot.isSleeping
+      ? "ngủ"
+      : bot.isStripMining
+      ? "đào hầm"
+      : bot.isHunting
+      ? "săn bắn"
+      : bot.isCleaningInventory
+      ? "dọn túi đồ"
+      : bot.isDepositing
+      ? "cất đồ"
+      : bot.isBuilding
+      ? "xây nhà"
+      : bot.isFlattening
+      ? "làm phẳng"
+      : bot.isFarmingWheat
+      ? "làm ruộng"
+      : bot.pathfinder?.isMoving()
+      ? "di chuyển"
+      : "làm việc khác";
+    try {
+      bot.chat(`${username}, đang bận ${reason}! (Gõ 'dừng' để hủy)`);
+    } catch (e) {}
+    console.log(
+      `[Action Blocked Final] Bot is busy (${reason}). Ignoring chat: "${trimmedMessage}"`
+    );
+    return; // Don't process AI command if busy
+  }
+
+  // AI Classification and Command Execution (Keep user's logic)
+  console.log("[Final Bot Chat] Starting AI Classification...");
+  try {
+    // Keep user's prompt and AI call logic
+    const baseClassificationPrompt = `**Nhiệm vụ:** Phân loại ý định chính của người dùng dựa trên tin nhắn cuối cùng và lịch sử trò chuyện (nếu có).\n\n**Danh sách các loại ý định có thể:**\n*   GET_BOT_COORDS: Hỏi tọa độ hiện tại của bot.\n*   GET_ENTITY_COORDS: Hỏi tọa độ của người chơi hoặc mob khác.\n*   FOLLOW_PLAYER: Yêu cầu bot đi theo người chơi đã nói.\n*   FIND_BLOCK: Tìm kiếm một loại block hoặc mob cụ thể.\n*   CHECK_INVENTORY: Xem các vật phẩm trong túi đồ của bot.\n*   GIVE_ITEM: Yêu cầu bot đưa một vật phẩm cho người chơi.\n*   PROTECT_PLAYER: Bảo vệ người chơi đã nói khỏi quái vật.\n*   COLLECT_BLOCK: Thu thập một số lượng block nhất định.\n*   GOTO_COORDS: Đi đến một tọa độ XYZ cụ thể.\n*   SCAN_ORES: Quét các loại quặng hoặc block đặc biệt xung quanh bot.\n*   SAVE_WAYPOINT: Lưu vị trí hiện tại hoặc tọa độ đã cho với một cái tên.\n*   GOTO_WAYPOINT: Đi đến một điểm đã lưu trước đó.\n*   FLATTEN_AREA: Làm phẳng một khu vực theo bán kính cho trước.\n*   LIST_WAYPOINTS: Liệt kê tất cả các điểm đã lưu.\n*   DELETE_WAYPOINT: Xóa một điểm đã lưu.\n*   BREED_ANIMALS: Cho các con vật (ví dụ: bò, cừu) ăn để chúng giao phối.\n*   CRAFT_ITEM: Chế tạo vật phẩm bằng bàn chế tạo (lò nung cần bàn chế tạo) hoặc trong túi đồ.\n*   SMELT_ITEM: Nung/nấu vật phẩm trong lò (furnace, smoker, blast furnace). **Quan trọng:** Phân loại là SMELT_ITEM cho các vật phẩm cần dùng lò nung trong minecraft \n*   GO_TO_SLEEP: Yêu cầu bot đi ngủ nếu trời tối.\n*   STRIP_MINE: Đào một đường hầm dài để tìm tài nguyên.\n*   HUNT_MOB: Săn một loại mob cụ thể để lấy vật phẩm.\n*   BUILD_HOUSE: Xây một ngôi nhà cơ bản.\n*   CLEAN_INVENTORY: Vứt bỏ các vật phẩm không cần thiết (đá cuội, đất...).\n*   DEPOSIT_ITEMS: Cất đồ vào các rương gần đó.\n*   EQUIP_ITEM: Trang bị vũ khí, công cụ hoặc áo giáp tốt nhất.\n*   FARM_WHEAT: Thu hoạch lúa mì và trồng lại hạt giống trong một khu vực.\n*   IDENTIFY_ITEM: Nhận dạng block/mob/item mà người chơi hỏi nhưng không rõ tên.\n*   LIST_CAPABILITIES: Hỏi bot có thể làm được những gì.\n*   GENERAL_CHAT: Các câu nói, câu hỏi thông thường, không thuộc các loại trên.\n*   IGNORE: Tin nhắn không liên quan, spam, hoặc không cần bot phản hồi.`; // STOP_TASK removed as it's handled earlier
+    const recentHistory = bot.chatHistory
+      .slice(-5)
+      .map((line) => line.replace(/\[.*?\]\s*/, "")); // Clean history slightly
+    const formattedHistory =
+      recentHistory.length > 0
+        ? `\n\nLịch sử:\n${recentHistory.join("\n")}`
+        : "";
+    const classificationPromptWithHistory = `${baseClassificationPrompt}${formattedHistory}\n\nTin nhắn mới:\n<${username}> ${trimmedMessage}\n\nLoại ý định (chọn 1 từ danh sách):`;
+    console.log(`[AI Intent Final Bot] Prompting...`);
+
+    // Use safety settings if desired
+    const safetySettings = [
+      {
+        category: "HARM_CATEGORY_HARASSMENT",
+        threshold: "BLOCK_MEDIUM_AND_ABOVE",
+      },
+      {
+        category: "HARM_CATEGORY_HATE_SPEECH",
+        threshold: "BLOCK_MEDIUM_AND_ABOVE",
+      },
+      {
+        category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        threshold: "BLOCK_MEDIUM_AND_ABOVE",
+      },
+      {
+        category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+        threshold: "BLOCK_MEDIUM_AND_ABOVE",
+      },
+    ];
+
+    const intentResult = await aiModel.generateContent({
+      contents: [
+        { role: "user", parts: [{ text: classificationPromptWithHistory }] },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        topK: 1,
+        topP: 0.2,
+        maxOutputTokens: 50,
+      }, // Slightly more flexible temp
+      safetySettings,
+    });
+
+    // Safer response handling
+    let intentClassification = "GENERAL_CHAT"; // Default
+    try {
+      if (
+        intentResult.response?.candidates?.length > 0 &&
+        intentResult.response.candidates[0].content?.parts?.length > 0
+      ) {
+        const rawText =
+          intentResult.response.candidates[0].content.parts[0].text;
+        const cleanedText = rawText
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z_]/g, "");
+
+        // Optional: Validate against known intents
+        const validIntents = [
+          "GET_BOT_COORDS",
+          "GET_ENTITY_COORDS",
+          "FOLLOW_PLAYER",
+          "FIND_BLOCK",
+          "CHECK_INVENTORY",
+          "GIVE_ITEM",
+          "PROTECT_PLAYER",
+          "COLLECT_BLOCK",
+          "GOTO_COORDS",
+          "SCAN_ORES",
+          "SAVE_WAYPOINT",
+          "GOTO_WAYPOINT",
+          "FLATTEN_AREA",
+          "LIST_WAYPOINTS",
+          "DELETE_WAYPOINT",
+          "BREED_ANIMALS",
+          "CRAFT_ITEM",
+          "SMELT_ITEM",
+          "GO_TO_SLEEP",
+          "STRIP_MINE",
+          "HUNT_MOB",
+          "BUILD_HOUSE",
+          "CLEAN_INVENTORY",
+          "DEPOSIT_ITEMS",
+          "EQUIP_ITEM",
+          "FARM_WHEAT",
+          "IDENTIFY_ITEM",
+          "LIST_CAPABILITIES",
+          "GENERAL_CHAT",
+          "IGNORE",
+        ];
+        if (validIntents.includes(cleanedText)) {
+          intentClassification = cleanedText;
+        } else {
+          console.warn(
+            `[AI Intent Final Bot] AI returned unrecognized intent: "${rawText}". Falling back.`
+          );
+        }
+      } else if (intentResult.response?.promptFeedback?.blockReason) {
+        console.warn(
+          `[AI Intent Final Bot] Classification blocked: ${intentResult.response.promptFeedback.blockReason}`
+        );
+        io.emit("system_message", {
+          message: "Yêu cầu bị chặn bởi bộ lọc an toàn.",
+        });
+        return; // Stop if blocked
+      } else {
+        console.warn("[AI Intent Final Bot] AI response was empty/malformed.");
+      }
+    } catch (parseError) {
+      console.error(
+        "[AI Intent Final Bot] Error parsing AI response:",
+        parseError
+      );
+    }
+
+    console.log(`[AI Intent Final Bot] Classified: "${intentClassification}"`);
+
+    // Execute Command (Keep user's switch statement)
+    console.log(`[Final Bot Chat] Executing: ${intentClassification}`);
+    switch (intentClassification) {
+      // ... Keep all user's cases here ...
+      case "GET_BOT_COORDS":
+        coordsCommands.getBotCoords(bot, username, io);
+        break;
+      case "GET_ENTITY_COORDS":
+        await coordsCommands.getEntityCoords(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "BUILD_HOUSE":
+        if (homeCommands?.startSurvivalHouseBuild) {
+          await homeCommands.startSurvivalHouseBuild(bot, username, io);
+        } else {
+          bot.chat("Lỗi: Chức năng xây nhà chưa sẵn sàng.");
+          console.error("homeCommands missing");
+        }
+        break;
+      case "FOLLOW_PLAYER":
+        followCommands.startFollowing(bot, username, io);
+        break;
+      case "FLATTEN_AREA":
+        await flattenArea(bot, username, trimmedMessage, aiModel, io);
+        break;
+      case "FIND_BLOCK":
+        await findCommands.startFindingTask(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "CHECK_INVENTORY":
+        inventoryCommands.checkInventory(bot, username, io);
+        break;
+      case "GIVE_ITEM":
+        await inventoryCommands.giveItem(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "PROTECT_PLAYER":
+        await protectCommands.startProtecting(bot, username, io);
+        break;
+      case "COLLECT_BLOCK":
+        await collectCommands.startCollectingTask(
+          bot,
+          username,
+          message,
+          aiModel,
+          io
+        );
+        break;
+      case "GOTO_COORDS":
+        await navigateCommands.goToCoordinates(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "SCAN_ORES":
+        if (scanCommands?.scanNearbyOres) {
+          await scanCommands.scanNearbyOres(bot, username, io);
+        } else {
+          bot.chat("Lỗi: Chức năng scan chưa sẵn sàng.");
+          console.error("scanCommands missing");
+        }
+        break;
+      case "SAVE_WAYPOINT":
+        await navigateCommands.saveWaypoint(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "GOTO_WAYPOINT":
+        await navigateCommands.goToWaypoint(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "LIST_WAYPOINTS":
+        navigateCommands.listWaypoints(bot, username, io);
+        break;
+      case "DELETE_WAYPOINT":
+        await navigateCommands.deleteWaypoint(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "BREED_ANIMALS":
+        await farmCommands.breedAnimals(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "CRAFT_ITEM": // Keep user's smelt check logic
+        const potentialCraftItemNameVi = trimmedMessage
+          .replace(/chế tạo|làm|craft|make|\d+/gi, "")
+          .trim();
+        const potentialCraftItemId = translateToEnglishId(
+          potentialCraftItemNameVi
+        );
+        const smeltableItems = [
+          "cooked_chicken",
+          "iron_ingot",
+          "glass",
+          "cooked_beef",
+          "cooked_porkchop",
+          "cooked_mutton",
+          "cooked_salmon",
+          "cooked_cod",
+          "dried_kelp",
+          "smooth_stone",
+          "charcoal",
+          "brick",
+          "nether_brick",
+        ]; // Keep list consistent
+        if (
+          potentialCraftItemId &&
+          smeltableItems.includes(potentialCraftItemId)
+        ) {
+          console.warn(
+            `[Intent Override Final] Intent was CRAFT_ITEM but looks like SMELT_ITEM for ${potentialCraftItemId}. Overriding.`
+          );
+          if (craftCommands?.smeltItem) {
+            await craftCommands.smeltItem(
+              bot,
+              username,
+              trimmedMessage,
+              aiModel,
+              io
+            );
+          } else {
+            console.error(
+              "Lỗi: Hàm smeltItem không tìm thấy trong craftCommands!"
+            );
+            bot.chat("Lỗi hệ thống khi cố gắng nung đồ.");
+          }
+        } else {
+          if (craftCommands?.craftItem) {
+            await craftCommands.craftItem(
+              bot,
+              username,
+              trimmedMessage,
+              aiModel,
+              io
+            );
+          } else {
+            console.error(
+              "Lỗi: Hàm craftItem không tìm thấy trong craftCommands!"
+            );
+            bot.chat("Lỗi hệ thống khi cố gắng chế tạo.");
+          }
+        }
+        break;
+      case "SMELT_ITEM":
+        if (craftCommands?.smeltItem) {
+          await craftCommands.smeltItem(
+            bot,
+            username,
+            trimmedMessage,
+            aiModel,
+            io
+          );
+        } else {
+          console.error(
+            "Lỗi: Hàm smeltItem không tìm thấy trong craftCommands!"
+          );
+          bot.chat("Lỗi hệ thống khi cố gắng nung đồ.");
+        }
+        break;
+      case "GO_TO_SLEEP":
+        await sleepCommands.goToSleep(bot, username, io);
+        break;
+      case "STRIP_MINE":
+        await stripMineCommands.startStripMiningTask(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "HUNT_MOB":
+        await huntCommands.startHuntingTask(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "CLEAN_INVENTORY":
+        await cleanInventoryCommands.startCleaningInventory(bot, username, io);
+        break;
+      case "DEPOSIT_ITEMS":
+        await depositCommands.startDepositTask(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "EQUIP_ITEM":
+        await equipCommands.startEquipItemTask(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "IDENTIFY_ITEM":
+        if (translateIdentifyCommands?.handleIdentifyRequest) {
+          await translateIdentifyCommands.handleIdentifyRequest(
+            bot,
+            username,
+            trimmedMessage,
+            aiModel,
+            io
+          );
+        } else {
+          bot.chat("Lỗi: Chức năng nhận dạng chưa sẵn sàng.");
+          console.error("translateIdentifyCommands missing");
+        }
+        break;
+      case "FARM_WHEAT":
+        const radiusMatch = trimmedMessage.match(
+          /(\d+)\s*(khối|block|ô|radius|bk)/i
+        );
+        const farmRadius = radiusMatch ? parseInt(radiusMatch[1], 10) : 50;
+        if (farmWheatCommands?.startFarmingWheat) {
+          await farmWheatCommands.startFarmingWheat(username, farmRadius, io);
+        } else {
+          console.error(
+            "[Farm Wheat Final] Lỗi: Không tìm thấy hàm startFarmingWheat!"
+          );
+          bot.chat("Lỗi hệ thống khi cố gắng làm ruộng.");
+        }
+        break;
+      case "LIST_CAPABILITIES":
+        infoCommands.listCapabilities(bot, username, io);
+        break;
+      // STOP_TASK handled earlier
+      case "GENERAL_CHAT":
+        await chatCommands.handleGeneralChat(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+      case "IGNORE":
+        console.log(`[Action Final] Ignoring message from ${username}.`);
+        break;
+      default:
+        console.warn(
+          `[Action Final] Unknown intent: "${intentClassification}". Fallback to general chat.`
+        );
+        await chatCommands.handleGeneralChat(
+          bot,
+          username,
+          trimmedMessage,
+          aiModel,
+          io
+        );
+        break;
+    }
+    console.log(
+      `[Final Bot Chat] Finished execution for: ${intentClassification}`
+    );
+  } catch (error) {
+    console.error("[AI/Chat Processing Final] Error:", error);
+    io.emit("bot_error", `Lỗi AI/Chat: ${error.message}`);
+    // Don't stop tasks on general AI error unless necessary
+    // stopAllTasks(bot, "Lỗi hệ thống AI");
+    try {
+      bot.chat(`Xin lỗi ${username}, có lỗi khi xử lý: ${error.message}`);
+    } catch (e) {}
+  }
+});
+
+// Keep user's other event handlers ('sleep', 'wake', 'death', 'health', 'messagestr', 'kicked', 'error', 'end')
+bot.on("sleep", () => {
+  console.log("[Final Event] Bot sleeping.");
+  bot.isSleeping = true;
+  io.emit("bot_status", "Đang ngủ Zzzz");
+  try {
+    if (bot?.entity) bot.chat("Zzzz");
+  } catch (e) {}
+});
+bot.on("wake", () => {
+  console.log("[Final Event] Bot woke up.");
+  bot.isSleeping = false;
+  io.emit("bot_status", "Đã thức dậy");
+});
+bot.on("death", () => {
+  console.error("[Final Event] !!! BOT DIED !!!");
+  io.emit("bot_status", "!!! ĐÃ CHẾT !!!");
+  try {
+    if (bot?.entity) bot.chat(":( Tôi chết rồi!");
+  } catch (e) {}
+  stopAllTasks(bot, "Bot chết");
+});
+bot.on("health", () => {
+  // This will trigger on health *or* food change
+  io.emit("health", { health: bot.health, food: bot.food });
+});
+bot.on("messagestr", (message, messagePosition, jsonMsg) => {
+  if (messagePosition === "system" || messagePosition === "game_info") {
+    console.log(`[System Msg Final] ${message}`);
+    io.emit("system_message", { message });
+  }
+  // Add non-chat messages to history
+  if (messagePosition !== "chat") {
+    try {
+      const ts = new Date().toLocaleTimeString();
+      const entry = `[${ts}] [${messagePosition}] ${message}`; // Log position type
+      bot.chatHistory.push(entry);
+      if (bot.chatHistory.length > MAX_CHAT_HISTORY) bot.chatHistory.shift();
+    } catch (e) {}
+  }
+});
+bot.on("kicked", (reason) => {
+  console.error("[Final Event] Kicked!");
+  let reasonString = reason;
+  try {
+    reasonString = JSON.stringify(JSON.parse(reason));
+  } catch {}
+  console.error("Reason:", reasonString);
+  io.emit("bot_status", `Bị kick: ${reasonString}`);
+  stopAllTasks(bot, "Bị kick");
+});
+bot.on("error", (err) => {
+  console.error("[Final Event] Bot Error:", err);
+  io.emit("bot_error", `Lỗi bot: ${err.message || err}`);
+});
+bot.on("end", (reason) => {
+  console.log("[Final Event] Disconnected. Reason:", reason);
+  io.emit("bot_status", `Đã ngắt kết nối: ${reason}`);
+  // Keep user's cleanup logic
+  if (autoLoot?.stopAutoLoot) autoLoot.stopAutoLoot("Bot connection ended");
+  // Clear intervals
+  if (bot.autoEatInterval) clearInterval(bot.autoEatInterval);
+  bot.autoEatInterval = null;
+  if (bot.protectionInterval) clearInterval(bot.protectionInterval);
+  bot.protectionInterval = null;
+  if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval);
+  bot.stuckDetectionInterval = null;
+  if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval);
+  bot.autoTorchInterval = null;
+  if (bot.positionUpdateInterval) clearInterval(bot.positionUpdateInterval);
+  bot.positionUpdateInterval = null;
+  // Reset viewer state
+  viewerPort = null;
+  isViewerPortReady = false;
+  console.log("[Final Event] Cleaned timers and reset viewer state.");
+});
+
+// --- Socket.IO Connection Handler ---
+io.on("connection", (socket) => {
+  console.log(`[Final Bot] Web client connected: ${socket.id}`);
+  connectedSockets.set(socket.id, socket);
+
+  // Send initial status (Keep user's logic)
+  const currentStatus = bot.entity ? "Đang hoạt động" : "Đang kết nối...";
+  socket.emit("bot_status", currentStatus);
+  socket.emit("bot_info", { username: bot.botInGameName || BOT_USERNAME });
+
+  // Send initial health/position/inventory if bot is already spawned
+  if (bot.entity) {
+    socket.emit("health", { health: bot.health, food: bot.food });
+    const pos = bot.entity.position;
+    socket.emit("bot_position", {
+      x: roundCoord(pos.x),
+      y: roundCoord(pos.y),
+      z: roundCoord(pos.z),
+    });
+    socket.emit("inventory_update", getFormattedInventory(bot)); // *** NEW: Send initial inventory ***
+  }
+
+  // Send viewer port if ready (Keep user's logic)
+  if (isViewerPortReady && viewerPort) {
+    console.log(
+      `[Viewer Send] Sending known port ${viewerPort} to new client ${socket.id}`
+    );
+    socket.emit("viewer_port", viewerPort);
+  } else {
+    console.log(
+      `[Viewer Send] Port not yet known for new client ${socket.id}. Will send when available.`
+    );
+  }
+
+  // Listen for chat messages from web (Keep user's logic)
+  socket.on("sendChat", (message) => {
+    if (bot?.chat && typeof bot.chat === "function") {
+      // Safer check
+      console.log(
+        `[Web Input] Received chat/command from ${socket.id}: ${message}`
+      );
+      try {
+        bot.chat(message);
+      } catch (chatErr) {
+        console.error(
+          `[Web Input] Error sending chat from web client ${socket.id}:`,
+          chatErr
+        );
+        socket.emit("bot_error", "Lỗi gửi chat tới bot.");
+      }
+    } else {
+      console.warn(
+        "[Web Input] Bot object or chat function missing/not ready."
+      );
+      socket.emit(
+        "bot_error",
+        "Lỗi bot: Không thể gửi chat (Bot chưa sẵn sàng?)."
+      );
+    }
+  });
+
+  // *** NEW: Listen for bot control events from web client ***
+  socket.on("bot_control", async (data) => {
+    // console.log(`[Web Control] Received from ${socket.id}:`, data); // Optional debug log
+    if (!bot || !bot.entity) {
+      // console.warn("[Web Control] Action ignored: Bot not ready.");
+      // Optionally send feedback: socket.emit('system_message', { message: "Bot chưa sẵn sàng để điều khiển." });
+      return;
+    }
+
+    try {
+      switch (data.action) {
+        case "start_move":
+        case "stop_move":
+          if (
+            data.direction &&
+            ["forward", "back", "left", "right", "jump", "sneak"].includes(
+              data.direction
+            )
+          ) {
+            bot.setControlState(data.direction, data.action === "start_move");
+            // console.log(`[Web Control] Set ${data.direction} to ${data.action === 'start_move'}`);
+          } else {
+            console.warn(
+              `[Web Control] Invalid move direction: ${data.direction}`
+            );
+          }
+          break;
+
+        case "mouse_move":
+          if (
+            typeof data.deltaX === "number" &&
+            typeof data.deltaY === "number"
+          ) {
+            const yaw = bot.entity.yaw;
+            const pitch = bot.entity.pitch;
+            // Ensure sensitivity is defined, default if not
+            const sensitivity =
+              typeof MOUSE_SENSITIVITY === "number" ? MOUSE_SENSITIVITY : 0.002;
+            const newYaw = yaw - data.deltaX * sensitivity;
+            const newPitch = Math.max(
+              -Math.PI / 2,
+              Math.min(Math.PI / 2, pitch - data.deltaY * sensitivity)
+            ); // Clamp pitch
+            await bot.look(newYaw, newPitch, false); // Use await, force = false
+          }
+          break;
+
+        case "attack":
+          console.log("[Web Control] Action: Attack");
+          stopAllTasks(bot, "Web UI Action"); // Stop other tasks first
+          await sleep(50); // Short delay to allow task stop
+          const entityToAttack = bot.entityAtCursor(4.5); // Max reach
+          if (
+            entityToAttack &&
+            entityToAttack.type !== "object" &&
+            entityToAttack.type !== "orb"
+          ) {
+            // Avoid item frames, xp orbs etc.
+            console.log(
+              `[Web Control] Attacking ${
+                entityToAttack.displayName ||
+                entityToAttack.name ||
+                entityToAttack.username
+              }`
+            );
+            bot.attack(entityToAttack);
+          } else {
+            console.log("[Web Control] Swinging arm (no valid entity found).");
+            bot.swingArm(); // Swing even if nothing is targetable
+          }
+          break;
+
+        case "mine":
+          console.log("[Web Control] Action: Mine");
+          stopAllTasks(bot, "Web UI Action"); // Stop other tasks
+          await sleep(50); // Delay
+          const blockToMine = bot.blockAtCursor(4.5); // Max reach
+          if (blockToMine && bot.canDigBlock(blockToMine)) {
+            console.log(
+              `[Web Control] Attempting to mine ${
+                blockToMine.name
+              } at ${formatCoords(blockToMine.position)}`
+            );
+            io.emit("system_message", {
+              message: `Đang đào ${blockToMine.name}...`,
+            });
+            try {
+              await bot.dig(blockToMine); // Await the digging process
+              console.log(`[Web Control] Finished mining ${blockToMine.name}.`);
+              io.emit("system_message", {
+                message: `Đào xong ${blockToMine.name}.`,
+              });
+              // Inventory update should trigger automatically
+            } catch (digErr) {
+              console.error(
+                `[Web Control] Error mining ${blockToMine.name}:`,
+                digErr.message
+              );
+              io.emit(
+                "bot_error",
+                `Lỗi khi đào ${blockToMine.name}: ${digErr.message}`
+              );
+              // Attempt to stop digging just in case
+              try {
+                bot.stopDigging();
+              } catch (e) {}
+            }
+          } else if (blockToMine) {
+            console.log(`[Web Control] Cannot mine block: ${blockToMine.name}`);
+            io.emit("system_message", {
+              message: `Không thể đào ${blockToMine.name}.`,
+            });
+          } else {
+            console.log("[Web Control] No block in reach to mine.");
+            io.emit("system_message", {
+              message: "Không có block nào trong tầm để đào.",
+            });
+          }
+          break;
+
+        case "place":
+          console.log("[Web Control] Action: Place");
+          stopAllTasks(bot, "Web UI Action"); // Stop other tasks
+          await sleep(50); // Delay
+          const heldItem = bot.heldItem;
+          if (!heldItem) {
+            console.log("[Web Control] Cannot place: No item held.");
+            io.emit("system_message", {
+              message: "Không cầm gì trên tay để đặt.",
+            });
+            break;
+          }
+
+          // Better check if item is a block
+          const itemData = bot.mcData.items[heldItem.type];
+          const isBlockItem = itemData && bot.mcData.blocks[itemData.id]; // Check if the item ID corresponds to a block ID
+
+          if (!isBlockItem) {
+            console.log(
+              `[Web Control] Cannot place: Held item '${heldItem.name}' is not a placeable block.`
+            );
+            io.emit("system_message", {
+              message: `Không thể đặt '${heldItem.displayName}', nó không phải block.`,
+            });
+            break;
+          }
+
+          const referenceBlock = bot.blockAtCursor(4.5); // Block to place against
+          if (referenceBlock) {
+            // Use the imported getVec3FromFace utility
+            const faceVector = getVec3FromFace(referenceBlock.face);
+            if (!faceVector) {
+              console.error(
+                `[Web Control] Invalid face vector from face index: ${referenceBlock.face}`
+              );
+              io.emit(
+                "bot_error",
+                "Lỗi: Không xác định được mặt để đặt block."
+              );
+              break;
+            }
+
+            console.log(
+              `[Web Control] Attempting to place ${heldItem.name} against ${referenceBlock.name} (face: ${referenceBlock.face}, vector: ${faceVector})`
+            );
+            io.emit("system_message", {
+              message: `Đang đặt ${heldItem.displayName}...`,
+            });
+            try {
+              // Place the held item against the reference block face
+              await bot.placeBlock(referenceBlock, faceVector);
+              console.log(
+                `[Web Control] Successfully placed ${heldItem.name}.`
+              );
+              // Inventory should update automatically
+            } catch (placeErr) {
+              console.error(
+                `[Web Control] Error placing ${heldItem.name}:`,
+                placeErr.message
+              );
+              // Provide more specific feedback if possible
+              let errMsg = placeErr.message;
+              if (errMsg.includes("must be holding"))
+                errMsg = "Phải cầm block trên tay.";
+              else if (errMsg.includes("No block has been placed"))
+                errMsg = "Không thể đặt ở vị trí đó.";
+              io.emit(
+                "bot_error",
+                `Lỗi khi đặt ${heldItem.displayName}: ${errMsg}`
+              );
+            }
+          } else {
+            console.log("[Web Control] No block in reach to place against.");
+            io.emit("system_message", {
+              message: "Không có block nào trong tầm để đặt lên.",
+            });
+          }
+          break;
+
+        case "stop": // Dedicated stop button from UI
+          console.log("[Web Control] Action: Stop Button");
+          stopAllTasks(bot, "Web UI Stop Button");
+          break;
+
+        case "change_view": // Primarily client-side viewer control
+          console.log(
+            `[Web Control] Received change_view request to: ${data.mode}. (Client should handle view change)`
+          );
+          // Server doesn't easily control live viewer camera mode.
+          // Client.js needs to use postMessage if the viewer supports it.
+          break;
+
+        default:
+          console.warn(`[Web Control] Unknown action received: ${data.action}`);
+      }
+    } catch (controlError) {
+      console.error(
+        `[Web Control] Error handling action '${data.action}':`,
+        controlError
+      );
+      socket.emit(
+        "bot_error",
+        `Lỗi khi thực hiện hành động '${data.action}': ${controlError.message}`
+      );
+    }
+  });
+
+  // Handle client disconnection (Keep user's logic)
+  socket.on("disconnect", () => {
+    console.log(`[Final Bot] Web client disconnected: ${socket.id}`);
+    connectedSockets.delete(socket.id);
+  });
+});
+
+// --- Start Web Server --- (Keep user's logic)
+server.listen(WEB_SERVER_PORT, () => {
+  console.log(`[Final Bot] Web server listening on port ${WEB_SERVER_PORT}`);
+  console.log(`[Final Bot] Access: http://localhost:${WEB_SERVER_PORT}`);
+});
+
+// --- Graceful Shutdown (SIGINT Handler) --- (Keep user's logic)
+process.on("SIGINT", () => {
+  console.log("\n[Final Bot] Shutting down...");
+  // Clear intervals
+  if (bot.stuckDetectionInterval) clearInterval(bot.stuckDetectionInterval);
+  bot.stuckDetectionInterval = null;
+  if (bot.autoEatInterval) clearInterval(bot.autoEatInterval);
+  bot.autoEatInterval = null;
+  if (bot.protectionInterval) clearInterval(bot.protectionInterval);
+  bot.protectionInterval = null;
+  if (bot.autoTorchInterval) clearInterval(bot.autoTorchInterval);
+  bot.autoTorchInterval = null;
+  if (bot.positionUpdateInterval) clearInterval(bot.positionUpdateInterval);
+  bot.positionUpdateInterval = null;
+  // if (viewerCheckInterval) clearInterval(viewerCheckInterval); viewerCheckInterval = null; // Not needed now
+  console.log("[SIGINT Final] Cleared interval timers.");
+
+  // Stop tasks
+  stopAllTasks(bot, "Tắt server");
+  const quitMessage = `Bot AI (${bot.botInGameName || BOT_USERNAME}) offline.`;
+  try {
+    if (bot?.player && bot.chat) bot.chat(quitMessage); // Check if bot can chat
+  } catch (e) {
+    console.warn("Could not send quit message:", e.message);
+  }
+
+  // Close servers and exit
+  io.close(() => {
+    console.log("[Final Bot] Socket.IO closed.");
+  });
+  server.close(() => {
+    console.log("[Final Bot] Web server closed.");
+    setTimeout(() => {
+      try {
+        if (bot?.quit) bot.quit();
+      } catch (e) {
+        // Check if quit exists
+        console.warn("Error quitting bot:", e.message);
+      }
+      console.log("[Final Bot] Exiting.");
+      process.exit(0);
+    }, 500); // Keep short delay
+  });
+  // Force exit
+  setTimeout(() => {
+    console.error("Force exiting after timeout...");
+    process.exit(1);
+  }, 5000);
+});
+
+console.log(
+  "[Final Bot] Server script initialization complete. Waiting for bot connection..."
+);
+
+// --- REMOVED duplicate getVec3FromFace definition ---
+// Ensure it's correctly defined and exported in your ./utils.js file
+
+// --- END OF FILE botWeb.js ---
