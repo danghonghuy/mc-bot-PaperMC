@@ -3,44 +3,159 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mineflayer Web Dashboard</title>
-    <link rel="stylesheet" href="/style.css"> <!-- Link tới file CSS -->
+    <title>Mineflayer Bot Dashboard - TuiBucBoi</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <style>
+        /* CSS tạm thời để đảm bảo giao diện hoạt động ngay */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #1e1e1e;
+            color: #e0e0e0;
+        }
+        #app-container {
+            display: flex;
+            min-height: 100vh;
+        }
+        #sidebar {
+            width: 300px;
+            background-color: #252526;
+            padding: 20px;
+            border-right: 1px solid #333;
+        }
+        #main-content {
+            flex: 1;
+            padding: 20px;
+            background-color: #1e1e1e;
+        }
+        #viewer-container {
+            position: relative;
+            width: 100%;
+            height: 80vh;
+            background-color: #000;
+            border: 1px solid #444;
+        }
+        #viewer-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        #viewer-status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background-color: rgba(0,0,0,0.7);
+            padding: 5px 10px;
+            border-radius: 3px;
+        }
+        #chat-log {
+            height: 300px;
+            overflow-y: auto;
+            margin-bottom: 15px;
+            border: 1px solid #333;
+            padding: 10px;
+            background-color: #252526;
+        }
+        .chat-message {
+            margin-bottom: 5px;
+            word-wrap: break-word;
+        }
+        .bot-message {
+            color: #4ec9b0;
+        }
+        .system-message {
+            color: #9cdcfe;
+            font-style: italic;
+        }
+        .error-message {
+            color: #f48771;
+        }
+        #chat-input-form {
+            display: flex;
+            gap: 10px;
+        }
+        #message-input {
+            flex: 1;
+            padding: 8px;
+            background-color: #333;
+            border: 1px solid #444;
+            color: white;
+        }
+        button {
+            padding: 8px 15px;
+            background-color: #0e639c;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #1177bb;
+        }
+        .status-section {
+            margin-bottom: 20px;
+        }
+    </style>
 </head>
 <body>
     <div id="app-container">
         <aside id="sidebar">
-            <h2>Trạng thái Bot</h2>
+            <h2>🤖 Trạng thái Bot</h2>
             <section class="status-section">
-                <div id="status">Đang kết nối...</div>
-                <div>Máu: <span id="health">N/A</span></div>
-                <div>Thức ăn: <span id="food">N/A</span></div>
-                <div>Vị trí: <span id="position">N/A</span></div> <!-- Thêm hiển thị vị trí -->
+                <div id="status">🔄 Đang kết nối...</div>
+                <div>❤️ Máu: <span id="health">N/A</span></div>
+                <div>🍖 Thức ăn: <span id="food">N/A</span></div>
+                <div>📍 Vị trí: <span id="position">N/A</span></div>
             </section>
+            
             <hr>
+            
             <section class="chat-section">
-                <h2>Chat</h2>
-                <div id="chat-log"></div>
+                <h2>💬 Chat với Bot</h2>
+                <div id="chat-log" aria-live="polite"></div>
                 <form id="chat-input-form">
-                    <input type="text" id="message-input" placeholder="Nhập tin nhắn hoặc lệnh..." autocomplete="off">
+                    <input type="text" id="message-input" 
+                           placeholder="Nhập lệnh (ví dụ: 'đi theo tôi')" 
+                           autocomplete="off"
+                           aria-label="Tin nhắn chat">
                     <button type="submit">Gửi</button>
                 </form>
             </section>
         </aside>
 
         <main id="main-content">
-             <div id="viewer-container">
-                 <canvas id="viewer-canvas"></canvas>
-                 <div id="viewer-status">Viewer đang tải...</div>
-             </div>
+            <h2>👀 Minecraft Viewer</h2>
+            <div id="viewer-container">
+                <iframe id="viewer-iframe" style="width:100%; height:100%; border:none; display:none;"></iframe>
+                <div id="viewer-status">⏳ Đang chờ kết nối viewer...</div>
+            </div>
+            
+            <div class="viewer-controls" style="margin-top: 10px;">
+                <button id="toggle-viewer">Ẩn/Hiện Viewer</button>
+                <button id="reset-viewer">Reset Góc Nhìn</button>
+            </div>
         </main>
     </div>
 
-    <!-- Thư viện Socket.IO client -->
+    <!-- Chỉ cần Socket.IO và client.js -->
     <script src="/socket.io/socket.io.js"></script>
-    <!-- Thư viện Prismarine Viewer client -->
-    <!-- QUAN TRỌNG: Đảm bảo đường dẫn này đúng. Nếu server phục vụ từ node_modules, nó sẽ là /index.js -->
-    <script src="/index.js"></script> <!-- Sửa từ viewer.js thành index.js dựa trên cấu trúc thư viện -->
-    <!-- Script client của bạn -->
-    <script src="/client.js"></script>
+    <script src="/js/client.js"></script>
+    
+    <script>
+        // Xử lý nút ẩn/hiện viewer
+        document.getElementById('toggle-viewer').addEventListener('click', function() {
+            const container = document.getElementById('viewer-container');
+            container.style.display = container.style.display === 'none' ? 'block' : 'none';
+        });
+        
+        // Xử lý nút reset góc nhìn (sẽ được cập nhật trong client.js)
+        document.getElementById('reset-viewer').addEventListener('click', function() {
+            // Gọi hàm reset từ client.js khi viewer đã sẵn sàng
+            if (window.resetViewerCamera) {
+                window.resetViewerCamera();
+            }
+        });
+    </script>
 </body>
 </html>
